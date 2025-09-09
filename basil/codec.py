@@ -1,41 +1,44 @@
-"""
-Codec module for BASIL encoding and decoding.
-
-Provides the main API for converting embeddings to/from semantic IDs.
-"""
-
 from pathlib import Path
 from typing import Iterable, List, Union
 
 import numpy as np
 import torch
 
-from .config import PreprocessConfig
-from .io import load_artifacts, validate_artifacts
-from .preprocess import Preprocessor
-from .utils import auto_select_device, chunk_iterator, to_numpy, to_torch
+from basil.config import PreprocessConfig
+from basil.io import load_artifacts, validate_artifacts
+from basil.preprocess import Preprocessor
+from basil.utils import chunk_iterator, get_device, to_numpy, to_torch
 
 
 class BasilCodec:
-    """
-    BASIL codec for encoding/decoding embeddings.
+    """BASIL codec for encoding/decoding embeddings using residual vector quantization.
 
-    Converts between continuous embeddings and discrete semantic IDs
-    using multi-level additive quantization.
+    This codec loads pre-trained artifacts and provides methods to encode embeddings
+    into semantic IDs and decode them back to approximate embeddings.
+
+    Attributes:
+        metadata: Dictionary containing codec configuration metadata.
+        levels: Number of quantization levels.
+        k_per_level: Number of centroids per quantization level.
+        dim_in: Input embedding dimension.
+        dim_pca: PCA-reduced dimension.
+        device: PyTorch device for computations.
+        codebooks: List of quantization codebooks as tensors.
+        preprocess: Preprocessor instance for PCA transformation.
     """
 
     def __init__(self, artifact_dir: Union[str, Path]):
-        """
-        Initialize codec from saved artifacts.
+        """Initialize the BASIL codec with pre-trained artifacts.
 
         Args:
-            artifact_dir: Directory containing basil.npz and metadata.json.
+            artifact_dir: Path to directory containing trained codec artifacts
+                including metadata, codebooks, and preprocessing components.
 
         Raises:
-            BasilError: If artifacts cannot be loaded.
+            FileNotFoundError: If artifact directory or required files don't exist.
+            ValueError: If artifacts fail validation checks.
         """
-
-        # Load artifacts
+        # Load and validate artifacts
         artifacts = load_artifacts(artifact_dir)
         validate_artifacts(artifacts)
 
@@ -45,174 +48,185 @@ class BasilCodec:
         self.dim_in = self.metadata["dim_in"]
         self.dim_pca = self.metadata["dim_pca"]
 
-        # Auto-select device
-        self.device = auto_select_device()
+        # Select device
+        self.device = get_device(None)
 
-        # Load codebooks
+        # Codebooks to device
         self.codebooks = []
         for i in range(self.levels):
-            cb_name = f"C{i + 1}"
-            cb_array = artifacts["codebooks"][cb_name]
-            cb_tensor = torch.from_numpy(cb_array).float().to(self.device)
-            self.codebooks.append(cb_tensor)
+            cb = artifacts["codebooks"][f"C{i + 1}"]
+            self.codebooks.append(torch.from_numpy(cb).float().to(self.device))
 
-        # Create preprocessor from arrays
-        preprocess_cfg = PreprocessConfig(
+        # Preprocessor from arrays, then move to device
+        p_cfg = PreprocessConfig(
             variance_to_keep=self.metadata.get("variance_to_keep", 0.95),
             dim_pca_max=self.metadata.get("dim_pca_max", 256),
             eps=self.metadata.get("eps", 1e-6),
             seed=self.metadata.get("seed", 42),
         )
-        self.preprocess = Preprocessor.from_arrays(
-            preprocess_cfg, artifacts["preprocess"]
+        self.preprocess = Preprocessor.from_arrays(p_cfg, artifacts["preprocess"]).to(
+            self.device
         )
 
-        # Move preprocessor to device
-        self.preprocess.mean = self.preprocess.mean.to(self.device)
-        self.preprocess.components = self.preprocess.components.to(self.device)
-        self.preprocess.scales = self.preprocess.scales.to(self.device)
+    # ------------------------------ public API ------------------------------
 
     def encode(self, embedding: Union[np.ndarray, torch.Tensor]) -> List[int]:
-        """
-        Encode a single embedding to semantic ID.
+        """Encode a single embedding to a semantic ID.
 
         Args:
-            embedding: Input embedding vector [D].
+            embedding: Input embedding vector as numpy array or torch tensor.
+                Can be 1D or 2D (single row).
 
         Returns:
-            List of code indices, one per level.
+            List of integer codes representing the quantized embedding,
+            with one code per quantization level.
 
         Raises:
-            ValueError: If embedding dimension is invalid.
+            ValueError: If embedding dimension doesn't match expected input dimension.
         """
-        # Reshape 1D to 2D if needed
         if embedding.ndim == 1:
             embedding = embedding.reshape(1, -1)
-
-        # Delegate to batch_encode
         return self.batch_encode(embedding)[0]
 
     def batch_encode(
         self, embeddings: Union[np.ndarray, torch.Tensor], batch_size: int = 8192
     ) -> List[List[int]]:
-        """
-        Encode multiple embeddings to semantic IDs.
+        """Encode multiple embeddings to semantic IDs.
 
         Args:
-            embeddings: Input embeddings [N, D].
-            batch_size: Batch size for processing.
+            embeddings: Input embeddings as 2D numpy array or torch tensor
+                with shape (n_embeddings, embedding_dim).
+            batch_size: Number of embeddings to process in each batch
+                for memory efficiency.
 
         Returns:
-            List of semantic IDs.
+            List of semantic IDs, where each semantic ID is a list of integer
+            codes (one per quantization level).
 
         Raises:
-            ValueError: If embeddings dimension is invalid.
+            ValueError: If embeddings are not 2D or have wrong dimension.
         """
-
-        # Convert to torch tensor on device
         embeddings = to_torch(embeddings, self.device)
-
         if embeddings.ndim != 2:
             raise ValueError(f"Expected 2D tensor, got shape {embeddings.shape}")
         if embeddings.shape[1] != self.dim_in:
             raise ValueError(
-                f"Dimension mismatch: expected {self.dim_in}, "
-                f"got {embeddings.shape[1]}"
+                f"Dimension mismatch: expected {self.dim_in}, got {embeddings.shape[1]}"
             )
 
         n = embeddings.shape[0]
-        all_codes = []
-
-        # Process in chunks
-        for start, end in chunk_iterator(n, batch_size):
-            batch = embeddings[start:end]
-
-            # Transform batch to preprocessed space
-            x_batch = self.preprocess.transform(batch)
-            residuals = x_batch.clone()
-
-            # Sequential encoding for batch
-            batch_codes = []
-            for level_idx, codebook in enumerate(self.codebooks):
-                # Find nearest codewords for batch
-                dists = torch.cdist(residuals, codebook, p=2)
-                code_indices = dists.argmin(dim=1)
-
-                # Store codes
-                if level_idx == 0:
-                    batch_codes = [[idx.item()] for idx in code_indices]
-                else:
-                    for i, idx in enumerate(code_indices):
-                        batch_codes[i].append(idx.item())
-
-                # Update residuals
-                assigned_codewords = codebook[code_indices]
-                residuals = residuals - assigned_codewords
-
-            all_codes.extend(batch_codes)
-
+        all_codes: List[List[int]] = []
+        with torch.inference_mode():
+            for start, end in chunk_iterator(n, batch_size):
+                x = self.preprocess.transform(embeddings[start:end])
+                all_codes.extend(self._encode_residuals(x))
         return all_codes
 
     def decode(self, sid: Iterable[int]) -> np.ndarray:
-        """
-        Decode a semantic ID to approximate embedding.
+        """Decode a single semantic ID to an approximate embedding.
 
         Args:
-            sid: Semantic ID (list of code indices).
+            sid: Semantic ID as an iterable of integer codes,
+                with one code per quantization level.
 
         Returns:
-            Decoded embedding [D].
+            Reconstructed embedding as numpy array with shape (embedding_dim,).
 
         Raises:
-            ValueError: If SID is invalid.
+            ValueError: If semantic ID has wrong length or invalid code indices.
         """
-        # Delegate to batch_decode
         return self.batch_decode([sid])[0]
 
     def batch_decode(self, sids: List[Iterable[int]]) -> np.ndarray:
-        """
-        Decode multiple semantic IDs to approximate embeddings.
+        """Decode multiple semantic IDs to approximate embeddings.
 
         Args:
-            sids: List of semantic IDs.
+            sids: List of semantic IDs, where each semantic ID is an iterable
+                of integer codes (one per quantization level).
 
         Returns:
-            Decoded embeddings [N, D].
+            Reconstructed embeddings as numpy array with shape
+            (n_embeddings, embedding_dim). Returns empty array if input is empty.
 
         Raises:
-            ValueError: If any SID is invalid.
+            ValueError: If any semantic ID has wrong length or invalid code indices.
         """
-
-        if not sids:
+        sids_list = self._normalize_and_validate_sids(sids)
+        if not sids_list:
             return np.empty((0, self.dim_in), dtype=np.float32)
 
-        # Validate all SIDs
-        for i, sid in enumerate(sids):
-            sid = list(sid)
+        with torch.inference_mode():
+            recon = self._reconstruct_from_sids(sids_list)
+            decoded = self.preprocess.inverse_transform(recon)
+            return to_numpy(decoded)
+
+    # ------------------------------ helpers ------------------------------
+
+    def _encode_residuals(self, x: torch.Tensor) -> List[List[int]]:
+        """Encode a batch of embeddings using residual vector quantization.
+
+        Args:
+            x: Batch of embeddings already transformed to PCA space,
+                with shape (batch_size, dim_pca).
+
+        Returns:
+            List of semantic IDs, where each semantic ID contains one code
+            per quantization level.
+        """
+        residuals = x.clone()
+        codes: List[List[int]] = [[] for _ in range(residuals.shape[0])]
+        for codebook in self.codebooks:
+            dists = torch.cdist(residuals, codebook, p=2)
+            idxs = dists.argmin(dim=1)
+            for i, idx in enumerate(idxs):
+                codes[i].append(int(idx))
+            residuals -= codebook[idxs]
+        return codes
+
+    def _normalize_and_validate_sids(
+        self, sids: List[Iterable[int]]
+    ) -> List[List[int]]:
+        """Normalize and validate semantic IDs for batch operations.
+
+        Args:
+            sids: List of semantic IDs as iterables of integer codes.
+
+        Returns:
+            List of semantic IDs converted to lists, validated for correct
+            length and code indices.
+
+        Raises:
+            ValueError: If any semantic ID has incorrect length or invalid codes.
+        """
+        if not sids:
+            return []
+        sids_list = [list(sid) for sid in sids]
+        for i, sid in enumerate(sids_list):
             if len(sid) != self.levels:
                 raise ValueError(
-                    f"Invalid SID length at index {i}: "
-                    f"expected {self.levels}, got {len(sid)}"
+                    f"Invalid SID length at index {i}: expected {self.levels}, got {len(sid)}"
                 )
             for level_idx, code_idx in enumerate(sid):
                 if not (0 <= code_idx < self.k_per_level):
                     raise ValueError(
-                        f"Invalid code index at SID {i}, level {level_idx+1}: "
-                        f"{code_idx} (must be 0-{self.k_per_level-1})"
+                        f"Invalid code index at SID {i}, level {level_idx+1}: {code_idx} (must be 0-{self.k_per_level-1})"
                     )
+        return sids_list
 
-        # Sum codewords for all SIDs
-        n = len(sids)
-        reconstructions = torch.zeros(
-            (n, self.dim_pca), device=self.device, dtype=torch.float32
-        )
+    def _reconstruct_from_sids(self, sids_list: List[List[int]]) -> torch.Tensor:
+        """Reconstruct embeddings from semantic IDs in PCA space.
 
-        for i, sid in enumerate(sids):
+        Args:
+            sids_list: List of validated semantic IDs, where each semantic ID
+                is a list of integer codes (one per quantization level).
+
+        Returns:
+            Reconstructed embeddings in PCA space as tensor with shape
+            (n_embeddings, dim_pca).
+        """
+        n = len(sids_list)
+        recon = torch.zeros((n, self.dim_pca), device=self.device, dtype=torch.float32)
+        for i, sid in enumerate(sids_list):
             for level_idx, code_idx in enumerate(sid):
-                reconstructions[i] += self.codebooks[level_idx][code_idx]
-
-        # Inverse transform to original space
-        decoded = self.preprocess.inverse_transform(reconstructions)
-
-        # Convert to numpy
-        return to_numpy(decoded)
+                recon[i] += self.codebooks[level_idx][code_idx]
+        return recon

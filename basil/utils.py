@@ -1,63 +1,37 @@
-"""
-Utility functions for BASIL.
-
-Provides device selection, tensor conversion, and other helpers.
-"""
-
 import logging
-from typing import Any, Dict, Optional, Union
+from typing import Optional, Union
 
 import numpy as np
 import torch
 
 
-def auto_select_device() -> torch.device:
-    """
-    Automatically select the best available device.
-
-    Priority: CUDA > MPS > CPU
-
-    Returns:
-        torch.device: Selected device.
-    """
-    if torch.cuda.is_available():
-        return torch.device("cuda")
-    elif torch.backends.mps.is_available():
-        return torch.device("mps")
-    return torch.device("cpu")
-
-
 def get_device(device: Optional[str] = None) -> torch.device:
     """
-    Get torch device from string specification.
+    Return a torch.device. If None, pick best available: cuda > mps > cpu.
 
     Args:
         device: Device string ('cuda', 'mps', 'cpu') or None for auto.
 
     Returns:
         torch.device: Selected device.
-
-    Raises:
-        ValueError: If specified device is not available.
     """
-    if device is None:
-        return auto_select_device()
-
-    device_map = {
-        "cuda": (torch.cuda.is_available, "CUDA requested but not available"),
-        "mps": (torch.backends.mps.is_available, "MPS requested but not available"),
-        "cpu": (lambda: True, ""),
+    checks = {
+        "cuda": torch.cuda.is_available,
+        "mps": torch.backends.mps.is_available,
+        "cpu": lambda: True,
     }
+    order = ("cuda", "mps", "cpu")
 
-    device = device.lower()
-    if device not in device_map:
-        raise ValueError(f"Unknown device: {device}")
+    if device is None:
+        device = next((d for d in order if checks[d]()), "cpu")
 
-    is_available, error_msg = device_map[device]
-    if not is_available():
-        raise ValueError(error_msg)
+    key = device.lower()
+    if key not in checks:
+        raise ValueError(f"Unknown device: {key}")
+    if not checks[key]():
+        raise ValueError(f"{key.upper()} requested but not available")
 
-    return torch.device(device)
+    return torch.device(key)
 
 
 def to_torch(
@@ -127,9 +101,8 @@ def calculate_entropy(counts: torch.Tensor) -> float:
     Returns:
         float: Normalized entropy (0 to 1).
     """
-
     probs = counts.float() / counts.sum()
-    probs = probs[probs > 0]  # Remove zeros
+    probs = probs[probs > 0]
     entropy = -(probs * probs.log()).sum().item()
     max_entropy = np.log(len(counts))
     return entropy / max_entropy if max_entropy > 0 else 0.0
@@ -153,6 +126,8 @@ def validate_embeddings(embeddings: Union[np.ndarray, torch.Tensor]) -> None:
             raise ValueError("Empty embeddings")
         if embeddings.shape[1] == 0:
             raise ValueError("Zero-dimensional embeddings")
+        if not np.isfinite(embeddings).all():
+            raise ValueError("Embeddings contain NaN or Inf")
     else:
         raise TypeError(f"Expected np.ndarray or torch.Tensor, got {type(embeddings)}")
 
@@ -168,7 +143,6 @@ def chunk_iterator(n: int, chunk_size: int):
     Yields:
         tuple: (start_idx, end_idx) for each chunk.
     """
-
     for start_idx in range(0, n, chunk_size):
         end_idx = min(start_idx + chunk_size, n)
         yield start_idx, end_idx
@@ -187,11 +161,8 @@ def setup_logger(name: str = "basil", level: str = "INFO") -> logging.Logger:
     """
     logger = logging.getLogger(name)
     logger.setLevel(getattr(logging, level.upper()))
-
-    # Remove existing handlers to avoid duplicates
     logger.handlers.clear()
 
-    # Create console handler with formatting
     handler = logging.StreamHandler()
     formatter = logging.Formatter(
         "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -199,20 +170,4 @@ def setup_logger(name: str = "basil", level: str = "INFO") -> logging.Logger:
     )
     handler.setFormatter(formatter)
     logger.addHandler(handler)
-
     return logger
-
-
-def log_config(logger: logging.Logger, config: Any, config_name: str) -> None:
-    """
-    Log configuration details.
-
-    Args:
-        logger: Logger instance.
-        config: Configuration object.
-        config_name: Name of the configuration.
-    """
-    logger.info(f"{config_name}:")
-    for field in config.__dataclass_fields__:
-        value = getattr(config, field)
-        logger.info(f"  {field}: {value}")

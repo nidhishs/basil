@@ -6,7 +6,6 @@ Trains codebooks from embeddings and saves artifacts.
 """
 
 import argparse
-import logging
 import sys
 from pathlib import Path
 
@@ -30,8 +29,8 @@ def parse_args():
     parser.add_argument("--out_dir", type=str, default="artifacts", help="Output directory for artifacts")
     
     # Model architecture
-    parser.add_argument("--levels", type=int, default=4, help="Number of residual levels (L)")
-    parser.add_argument("--k", type=int, default=4096, help="Number of centroids per level (K)")
+    parser.add_argument("--levels", type=int, default=3, help="Number of residual levels (L)")
+    parser.add_argument("--k", type=int, default=1024, help="Number of centroids per level (K)")
     
     # Training parameters
     parser.add_argument("--max_iters", type=int, default=20, help="Maximum k-means iterations per level")

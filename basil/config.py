@@ -1,10 +1,3 @@
-"""
-Configuration dataclasses for BASIL.
-
-Provides configuration for preprocessing and training components
-with sensible defaults and minimal knobs.
-"""
-
 from dataclasses import dataclass
 from typing import Optional
 

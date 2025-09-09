@@ -5,10 +5,10 @@ A production-focused library for converting high-dimensional embeddings
 to short semantic IDs and back.
 """
 
-from .codec import BasilCodec
-from .config import PreprocessConfig, TrainerConfig
-from .preprocess import Preprocessor
-from .trainer import BasilTrainer
+from basil.codec import BasilCodec
+from basil.config import PreprocessConfig, TrainerConfig
+from basil.preprocess import Preprocessor
+from basil.trainer import BasilTrainer
 
 __version__ = "1.0.0"
 __all__ = [

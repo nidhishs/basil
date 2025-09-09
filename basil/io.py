@@ -1,9 +1,3 @@
-"""
-I/O utilities for BASIL artifacts.
-
-Handles loading and saving of NPZ files and JSON metadata.
-"""
-
 import json
 from pathlib import Path
 from typing import Any, Dict, Union
@@ -12,9 +6,14 @@ import numpy as np
 
 
 class BasilError(Exception):
-    """Custom exception for BASIL errors."""
+    """Custom exception for Basil-related errors."""
 
     pass
+
+
+def _prefixed_float32(d: Dict[str, np.ndarray], prefix: str) -> Dict[str, np.ndarray]:
+    """Add prefix to dictionary keys and convert arrays to float32."""
+    return {f"{prefix}/{k}": v.astype(np.float32) for k, v in d.items()}
 
 
 def save_artifacts(
@@ -23,70 +22,55 @@ def save_artifacts(
     preprocess_arrays: Dict[str, np.ndarray],
     metadata: Dict[str, Any],
 ) -> None:
-    """
-    Save BASIL artifacts to disk.
+    """Save Basil model artifacts to disk.
 
-    Creates basil.npz with codebooks and preprocessing arrays,
-    and metadata.json with configuration.
+    Saves codebooks and preprocessing arrays as a compressed NPZ file,
+    and metadata as a JSON file in the specified directory.
 
     Args:
-        artifact_dir: Directory to save artifacts.
-        codebooks: Dictionary of codebook arrays (C1, C2, ...).
-        preprocess_arrays: Dictionary of preprocessing arrays.
-        metadata: Metadata dictionary.
+        artifact_dir: Directory path where artifacts will be saved.
+        codebooks: Dictionary of codebook arrays keyed by level names.
+        preprocess_arrays: Dictionary of preprocessing arrays (mean, components, scales).
+        metadata: Dictionary containing model metadata.
 
     Raises:
-        BasilError: If saving fails.
+        BasilError: If saving fails for any reason.
     """
-
     artifact_dir = Path(artifact_dir)
     artifact_dir.mkdir(parents=True, exist_ok=True)
 
-    # Combine all arrays for NPZ with prefixed keys
     all_arrays = {
-        **{f"codebooks/{k}": v.astype(np.float32) for k, v in codebooks.items()},
-        **{
-            f"preprocess/{k}": v.astype(np.float32)
-            for k, v in preprocess_arrays.items()
-        },
+        **_prefixed_float32(codebooks, "codebooks"),
+        **_prefixed_float32(preprocess_arrays, "preprocess"),
     }
 
-    # Helper for atomic save
-    def atomic_save(path: Path, save_func) -> None:
-        # Insert .tmp before the file extension
-        temp_path = path.parent / f"{path.stem}.tmp{path.suffix}"
-        try:
-            save_func(temp_path)
-            temp_path.replace(path)
-        except Exception as e:
-            if temp_path.exists():
-                temp_path.unlink()
-            raise BasilError(f"Failed to save {path.name}: {e}")
+    try:
+        np.savez_compressed(artifact_dir / "basil.npz", **all_arrays)
+    except Exception as e:
+        raise BasilError(f"Failed to save basil.npz: {e}")
 
-    # Save NPZ and JSON atomically
-    atomic_save(
-        artifact_dir / "basil.npz", lambda p: np.savez_compressed(p, **all_arrays)
-    )
-    atomic_save(
-        artifact_dir / "metadata.json",
-        lambda p: json.dump(metadata, open(p, "w"), indent=2),
-    )
+    try:
+        with open(artifact_dir / "metadata.json", "w") as f:
+            json.dump(metadata, f, indent=2)
+    except Exception as e:
+        raise BasilError(f"Failed to save metadata.json: {e}")
 
 
 def load_artifacts(artifact_dir: Union[str, Path]) -> Dict[str, Any]:
-    """
-    Load BASIL artifacts from disk.
+    """Load Basil model artifacts from disk.
+
+    Loads codebooks, preprocessing arrays, and metadata from the specified
+    directory containing basil.npz and metadata.json files.
 
     Args:
-        artifact_dir: Directory containing artifacts.
+        artifact_dir: Directory path containing the artifact files.
 
     Returns:
-        Dictionary with 'codebooks', 'preprocess', and 'metadata'.
+        Dictionary with 'codebooks', 'preprocess', and 'metadata' keys.
 
     Raises:
-        BasilError: If loading fails or files are missing.
+        BasilError: If directory or files don't exist, or loading fails.
     """
-
     artifact_dir = Path(artifact_dir)
 
     if not artifact_dir.exists():
@@ -94,15 +78,20 @@ def load_artifacts(artifact_dir: Union[str, Path]) -> Dict[str, Any]:
 
     npz_path = artifact_dir / "basil.npz"
     json_path = artifact_dir / "metadata.json"
-
     if not npz_path.exists():
         raise BasilError(f"NPZ file not found: {npz_path}")
     if not json_path.exists():
         raise BasilError(f"Metadata file not found: {json_path}")
 
-    # Load NPZ and metadata
     try:
-        npz_data = np.load(npz_path)
+        with np.load(npz_path, allow_pickle=False) as z:
+            files = z.files
+            codebooks = {
+                k.split("/", 1)[1]: z[k] for k in files if k.startswith("codebooks/")
+            }
+            preprocess = {
+                k.split("/", 1)[1]: z[k] for k in files if k.startswith("preprocess/")
+            }
     except Exception as e:
         raise BasilError(f"Failed to load NPZ: {e}")
 
@@ -112,60 +101,35 @@ def load_artifacts(artifact_dir: Union[str, Path]) -> Dict[str, Any]:
     except Exception as e:
         raise BasilError(f"Failed to load metadata: {e}")
 
-    # Parse NPZ contents into dictionaries
-    codebooks = {
-        k.split("/", 1)[1]: npz_data[k]
-        for k in npz_data.files
-        if k.startswith("codebooks/")
-    }
-    preprocess = {
-        k.split("/", 1)[1]: npz_data[k]
-        for k in npz_data.files
-        if k.startswith("preprocess/")
-    }
-
     return {"codebooks": codebooks, "preprocess": preprocess, "metadata": metadata}
 
 
 def validate_artifacts(artifacts: Dict[str, Any]) -> None:
-    """
-    Validate loaded artifacts have required structure.
+    """Validate that artifacts contain all required components.
+
+    Checks that the artifacts dictionary contains the expected structure
+    with all required preprocessing arrays, metadata fields, and codebooks.
 
     Args:
-        artifacts: Loaded artifacts dictionary.
+        artifacts: Dictionary returned by load_artifacts().
 
     Raises:
-        BasilError: If validation fails.
+        BasilError: If any required component is missing or invalid.
     """
+    for top in ("codebooks", "preprocess", "metadata"):
+        if top not in artifacts:
+            raise BasilError(f"Missing '{top}' in artifacts")
 
-    if "codebooks" not in artifacts:
-        raise BasilError("Missing 'codebooks' in artifacts")
-    if "preprocess" not in artifacts:
-        raise BasilError("Missing 'preprocess' in artifacts")
-    if "metadata" not in artifacts:
-        raise BasilError("Missing 'metadata' in artifacts")
-
-    # Check required preprocessing arrays
-    preprocess = artifacts["preprocess"]
-    required_preprocess = ["mean", "components", "scales"]
-    for key in required_preprocess:
-        if key not in preprocess:
+    for key in ("mean", "components", "scales"):
+        if key not in artifacts["preprocess"]:
             raise BasilError(f"Missing preprocessing array: {key}")
 
-    # Check metadata fields
-    metadata = artifacts["metadata"]
-    required_metadata = ["levels", "k_per_level", "dim_in", "dim_pca"]
-    for key in required_metadata:
-        if key not in metadata:
+    for key in ("levels", "k_per_level", "dim_in", "dim_pca"):
+        if key not in artifacts["metadata"]:
             raise BasilError(f"Missing metadata field: {key}")
 
-    # Check codebooks match metadata
-    levels = metadata["levels"]
-    expected_codebooks = {f"C{i+1}" for i in range(levels)}
-    actual_codebooks = set(artifacts["codebooks"].keys())
-
-    if expected_codebooks != actual_codebooks:
-        raise BasilError(
-            f"Codebook mismatch. Expected: {expected_codebooks}, "
-            f"Got: {actual_codebooks}"
-        )
+    levels = artifacts["metadata"]["levels"]
+    expected = {f"C{i+1}" for i in range(levels)}
+    actual = set(artifacts["codebooks"])
+    if expected != actual:
+        raise BasilError(f"Codebook mismatch. Expected: {expected}, Got: {actual}")
