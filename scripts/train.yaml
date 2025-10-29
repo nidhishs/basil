@@ -1,0 +1,20 @@
+# =============================================================================
+# BASIL CONFIGURATION
+# =============================================================================
+
+output_dir: "output/basil-v1"
+
+# Data config separated for I/O isolation
+data:
+  path: "embeddings.npy"
+  batch_size: 8096
+
+model:
+  input_dim: 768
+  codebook_size: 256
+  num_levels: 3
+
+train:
+  epochs: 10
+  lr: 0.001
+  seed: 42

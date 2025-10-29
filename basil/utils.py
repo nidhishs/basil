@@ -1,173 +1,152 @@
+from __future__ import annotations
+
+import copy
+import json
 import logging
-from typing import Optional, Union
+import sys
+from dataclasses import asdict
+from pathlib import Path
 
-import numpy as np
-import torch
+from basil.config import BasilDataConfig, BasilModelConfig, BasilTrainConfig
+
+MODEL_FILENAME = "model.safetensors"
+CONFIG_FILENAME = "config.json"
+
+# --- Optional Imports (Safe for Inference) ---
+# Guards ensure this module is safe for inference environments without Torch.
+try:
+    import torch
+    from safetensors.torch import save_file
+except ImportError:
+    torch = None
+    save_file = None
 
 
-def get_device(device: Optional[str] = None) -> torch.device:
+def setup_logging(name: str = "basil", level: str = "INFO") -> logging.Logger:
     """
-    Return a torch.device. If None, pick best available: cuda > mps > cpu.
-
-    Args:
-        device: Device string ('cuda', 'mps', 'cpu') or None for auto.
-
-    Returns:
-        torch.device: Selected device.
-    """
-    checks = {
-        "cuda": torch.cuda.is_available,
-        "mps": torch.backends.mps.is_available,
-        "cpu": lambda: True,
-    }
-    order = ("cuda", "mps", "cpu")
-
-    if device is None:
-        device = next((d for d in order if checks[d]()), "cpu")
-
-    key = device.lower()
-    if key not in checks:
-        raise ValueError(f"Unknown device: {key}")
-    if not checks[key]():
-        raise ValueError(f"{key.upper()} requested but not available")
-
-    return torch.device(key)
-
-
-def to_torch(
-    data: Union[np.ndarray, torch.Tensor],
-    device: Optional[torch.device] = None,
-    dtype: torch.dtype = torch.float32,
-) -> torch.Tensor:
-    """
-    Convert data to torch tensor.
-
-    Args:
-        data: Input data (numpy array or torch tensor).
-        device: Target device (None to keep current).
-        dtype: Target dtype.
-
-    Returns:
-        torch.Tensor: Converted tensor.
-    """
-    if isinstance(data, np.ndarray):
-        tensor = torch.from_numpy(data.astype(np.float32))
-    elif isinstance(data, torch.Tensor):
-        tensor = data
-    else:
-        raise TypeError(f"Expected np.ndarray or torch.Tensor, got {type(data)}")
-
-    return tensor.to(device=device, dtype=dtype) if device else tensor.to(dtype=dtype)
-
-
-def to_numpy(data: Union[np.ndarray, torch.Tensor]) -> np.ndarray:
-    """
-    Convert data to numpy array.
-
-    Args:
-        data: Input data (numpy array or torch tensor).
-
-    Returns:
-        np.ndarray: Converted array.
-    """
-    if isinstance(data, torch.Tensor):
-        return data.detach().cpu().numpy()
-    if isinstance(data, np.ndarray):
-        return data
-    raise TypeError(f"Expected np.ndarray or torch.Tensor, got {type(data)}")
-
-
-def set_seeds(seed: int) -> None:
-    """
-    Set random seeds for reproducibility.
-
-    Args:
-        seed: Random seed value.
-    """
-
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-
-
-def calculate_entropy(counts: torch.Tensor) -> float:
-    """
-    Calculate normalized entropy for utilization measurement.
-
-    Args:
-        counts: Count tensor.
-
-    Returns:
-        float: Normalized entropy (0 to 1).
-    """
-    probs = counts.float() / counts.sum()
-    probs = probs[probs > 0]
-    entropy = -(probs * probs.log()).sum().item()
-    max_entropy = np.log(len(counts))
-    return entropy / max_entropy if max_entropy > 0 else 0.0
-
-
-def validate_embeddings(embeddings: Union[np.ndarray, torch.Tensor]) -> None:
-    """
-    Validate embedding tensor shape and values.
-
-    Args:
-        embeddings: Input embeddings.
-
-    Raises:
-        ValueError: If embeddings are invalid.
-    """
-
-    if isinstance(embeddings, (np.ndarray, torch.Tensor)):
-        if embeddings.ndim != 2:
-            raise ValueError(f"Expected 2D embeddings, got shape {embeddings.shape}")
-        if embeddings.shape[0] == 0:
-            raise ValueError("Empty embeddings")
-        if embeddings.shape[1] == 0:
-            raise ValueError("Zero-dimensional embeddings")
-        if not np.isfinite(embeddings).all():
-            raise ValueError("Embeddings contain NaN or Inf")
-    else:
-        raise TypeError(f"Expected np.ndarray or torch.Tensor, got {type(embeddings)}")
-
-
-def chunk_iterator(n: int, chunk_size: int):
-    """
-    Generate chunks for batched processing.
-
-    Args:
-        n: Total number of items.
-        chunk_size: Size of each chunk.
-
-    Yields:
-        tuple: (start_idx, end_idx) for each chunk.
-    """
-    for start_idx in range(0, n, chunk_size):
-        end_idx = min(start_idx + chunk_size, n)
-        yield start_idx, end_idx
-
-
-def setup_logger(name: str = "basil", level: str = "INFO") -> logging.Logger:
-    """
-    Set up a logger with consistent formatting.
-
-    Args:
-        name: Logger name.
-        level: Logging level.
-
-    Returns:
-        logging.Logger: Configured logger.
+    Configures a standard Python logger with a clean formatter.
     """
     logger = logging.getLogger(name)
     logger.setLevel(getattr(logging, level.upper()))
-    logger.handlers.clear()
 
-    handler = logging.StreamHandler()
-    formatter = logging.Formatter(
-        "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
+    if not logger.handlers:
+        handler = logging.StreamHandler(sys.stdout)
+        formatter = logging.Formatter(
+            "%(asctime)s | %(levelname)s | %(message)s", datefmt="%H:%M:%S"
+        )
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+
     return logger
+
+
+def setup_device(request: str) -> "torch.device":
+    """
+    Auto-detects the best available hardware (CUDA > MPS > CPU).
+    Raises ImportError if torch is not installed.
+    """
+    if torch is None:
+        raise ImportError("Torch is not installed. Cannot setup device.")
+
+    if request != "auto":
+        return torch.device(request)
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
+def save_checkpoint(
+    model: torch.nn.Module,
+    model_cfg: BasilModelConfig,
+    train_cfg: BasilTrainConfig,
+    data_cfg: BasilDataConfig,
+    out_dir: Path,
+    export_onnx: bool = True,
+):
+    """
+    Saves weights (safetensors), config (json), and optionally exports ONNX.
+    Expects a model on any device (exports safely via copy).
+    """
+    from basil import __version__
+
+    if torch is None:
+        raise ImportError("Torch is not installed. Cannot save checkpoint.")
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. Save Weights (Safetensors)
+    # Efficient zero-copy save. Safe to do from GPU.
+    save_file(model.state_dict(), out_dir / MODEL_FILENAME)
+
+    # 2. Save Config
+    # fmt: off
+    meta = {
+        "model": (asdict(model_cfg) if hasattr(model_cfg, "__dataclass_fields__") else model_cfg),
+        "train": (asdict(train_cfg) if hasattr(train_cfg, "__dataclass_fields__") else train_cfg),
+        "data": (asdict(data_cfg) if hasattr(data_cfg, "__dataclass_fields__") else data_cfg),
+        "format": f"basil-v{__version__}",
+    }
+    # fmt: on
+
+    with open(out_dir / CONFIG_FILENAME, "w") as f:
+        json.dump(meta, f, indent=2)
+
+    # 3. Export ONNX (Optional, can be skipped for speed)
+    if export_onnx:
+        _export_onnx_set(model, model_cfg, out_dir)
+
+
+# Wrappers expose specific methods (encode/decode) as the primary forward pass
+class EncWrapper(torch.nn.Module):
+    def __init__(self, m):
+        super().__init__()
+        self.m = m
+
+    def forward(self, x):
+        return self.m.export_encode(x)
+
+
+class DecWrapper(torch.nn.Module):
+    def __init__(self, m):
+        super().__init__()
+        self.m = m
+
+    def forward(self, c):
+        return self.m.export_decode(c)
+
+
+def _export_onnx_set(model: torch.nn.Module, cfg: BasilModelConfig, out_dir: Path):
+    """
+    Internal helper to export Encoder/Decoder pairs. Uses deepcopy + CPU move.
+    """
+    if torch is None:
+        raise ImportError("Torch is not installed. Cannot export to ONNX.")
+
+    # Create a disposable CPU copy.
+    export_model = copy.deepcopy(model).to("cpu")
+    export_model.eval()
+
+    dummy_emb = torch.randn(1, cfg.input_dim).to("cpu")
+    dummy_codes = torch.zeros(1, cfg.num_levels).int().to("cpu")
+
+    torch.onnx.export(
+        EncWrapper(export_model),
+        (dummy_emb,),
+        out_dir / "encoder.onnx",
+        input_names=["emb"],
+        output_names=["semid"],
+        dynamic_axes={"emb": {0: "batch_size"}, "semid": {0: "batch_size"}},
+        opset_version=17,
+    )
+
+    torch.onnx.export(
+        DecWrapper(export_model),
+        (dummy_codes,),
+        out_dir / "decoder.onnx",
+        input_names=["semid"],
+        output_names=["emb"],
+        dynamic_axes={"semid": {0: "batch_size"}, "emb": {0: "batch_size"}},
+        opset_version=17,
+    )
