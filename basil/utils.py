@@ -5,7 +5,6 @@ import json
 import logging
 import sys
 from collections import defaultdict
-from dataclasses import asdict
 from pathlib import Path
 
 from basil.config import BasilDataConfig, BasilModelConfig, BasilTrainConfig
@@ -109,9 +108,9 @@ def save_checkpoint(
     # 2. Save Config
     # fmt: off
     meta = {
-        "model": (asdict(model_cfg) if hasattr(model_cfg, "__dataclass_fields__") else model_cfg),
-        "train": (asdict(train_cfg) if hasattr(train_cfg, "__dataclass_fields__") else train_cfg),
-        "data": (asdict(data_cfg) if hasattr(data_cfg, "__dataclass_fields__") else data_cfg),
+        "model": (model_cfg.model_dump() if hasattr(model_cfg, "model_dump") else model_cfg),
+        "train": (train_cfg.model_dump() if hasattr(train_cfg, "model_dump") else train_cfg),
+        "data": (data_cfg.model_dump() if hasattr(data_cfg, "model_dump") else data_cfg),
         "format": f"basil-v{__version__}",
     }
     # fmt: on

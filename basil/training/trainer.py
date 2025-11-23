@@ -117,13 +117,12 @@ class BasilTrainer:
     def train(self):
         self.setup()
         self.global_step = 0
-        
+
         _ckpt_args = (
             self.model,
             self.model_cfg,
             self.train_cfg,
             self.data_cfg,
-            self.out_root,
         )
 
         logger.info(f"Starting training. Total steps: {self.total_steps}")

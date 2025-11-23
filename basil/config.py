@@ -1,77 +1,79 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 # fmt: off
-@dataclass
-class BasilModelConfig:
+class BasilModelConfig(BaseModel):
     """
     Defines the RQ-VAE architecture parameters.
     """
-    input_dim: int = field(metadata={"help": "Dimension of input embeddings (e.g. 768 for BERT)"})
-    hidden_dim: int = field(default=512, metadata={"help": "Size of internal MLP projection layers"})
-    latent_dim: int = field(default=32, metadata={"help": "Dimension of the quantized codebook vectors"})
-    codebook_size: int = field(default=1024, metadata={"help": "Number of entries in each codebook level"})
-    num_levels: int = field(default=3, metadata={"help": "Depth of residual quantization"})
-    dropout: float = field(default=0.1, metadata={"help": "Dropout probability for regularization"})
-    commitment_beta: float = field(default=0.25, metadata={"help": "Weight of the commitment loss"})
-    use_hierarchical: bool = field(default=False, metadata={"help": "Use hierarchical codebook sizes where each level is half the size of the previous level"})
-    ema_decay: float = field(default=0.99, metadata={"help": "EMA decay factor for codebook updates"})
-    stochastic_sampling: bool = field(default=True, metadata={"help": "Use random sampling during training"})
-    stochastic_temperature: float = field(default=0.6, metadata={"help": "Temperature for stochastic sampling (higher = more random)"})
+    model_config = ConfigDict(extra='forbid')
+    
+    input_dim: int = Field(..., description="Dimension of input embeddings (e.g. 768 for BERT)")
+    hidden_dim: int = Field(default=512, description="Size of internal MLP projection layers")
+    latent_dim: int = Field(default=32, description="Dimension of the quantized codebook vectors")
+    codebook_size: int = Field(default=1024, description="Number of entries in each codebook level")
+    num_levels: int = Field(default=3, description="Depth of residual quantization")
+    dropout: float = Field(default=0.1, description="Dropout probability for regularization")
+    commitment_beta: float = Field(default=0.25, description="Weight of the commitment loss")
+    use_hierarchical: bool = Field(default=False, description="Use hierarchical codebook sizes where each level is half the size of the previous level")
+    ema_decay: float = Field(default=0.99, description="EMA decay factor for codebook updates")
+    stochastic_sampling: bool = Field(default=True, description="Use random sampling during training")
+    stochastic_temperature: float = Field(default=0.6, description="Temperature for stochastic sampling (higher = more random)")
 
 
-@dataclass
-class BasilDataConfig:
+class BasilDataConfig(BaseModel):
     """
     Separates I/O configuration. Allows switching between in-memory and streaming 
     strategies without changing model logic.
     """
-    path: str = field(metadata={"help": "Path to the .npy dataset file"})
-    val_set_size: float = field(default=0.05, metadata={"help": "Fraction of dataset to use for validation (0.0-1.0)"})
-    batch_size: int = field(default=4096, metadata={"help": "Batch size. Keep > 2048 for healthy codebooks."})
-    num_workers: int = field(default=8, metadata={"help": "DataLoader workers"})
+    model_config = ConfigDict(extra='forbid')
+    
+    path: str = Field(..., description="Path to the .npy dataset file")
+    val_set_size: float = Field(default=0.05, description="Fraction of dataset to use for validation (0.0-1.0)")
+    batch_size: int = Field(default=4096, description="Batch size. Keep > 2048 for healthy codebooks.")
+    num_workers: int = Field(default=8, description="DataLoader workers")
     
     # Streaming allows training on datasets larger than RAM
-    stream: bool = field(default=False, metadata={"help": "If True, use mmap+sequential read. If False, load to RAM."})
+    stream: bool = Field(default=False, description="If True, use mmap+sequential read. If False, load to RAM.")
     # Safety flag prevents user error where streaming + unshuffled data = model collapse.
-    is_pre_shuffled: bool = field(default=False, metadata={"help": "Must be True if streaming to confirm disk data is randomized."})
-    prefetch_factor: int = field(default=2, metadata={"help": "Number of batches to prefetch per worker."})
+    is_pre_shuffled: bool = Field(default=False, description="Must be True if streaming to confirm disk data is randomized.")
+    prefetch_factor: int = Field(default=2, description="Number of batches to prefetch per worker.")
 
-    def __post_init__(self):
-        if self.stream and not self.is_pre_shuffled:
+    @field_validator('is_pre_shuffled')
+    def validate_streaming_config(cls, v, info):
+        """Ensure streaming mode requires pre-shuffled data."""
+        if info.data.get('stream') and not v:
             raise ValueError(
                 "Configuration Error: `stream=True` requires `is_pre_shuffled=True`.\n"
                 "Streaming reads sequentially. If data isn't randomized on disk, the model will collapse.\n"
             )
+        return v
 
 
-@dataclass
-class BasilTrainConfig:
+class BasilTrainConfig(BaseModel):
     """
     Hyperparameters and System config.
     """
+    model_config = ConfigDict(extra='forbid')
+    
     # Logging
-    project_name: str | None = field(default=None, metadata={"help": "WandB project name. If None, WandB is disabled."})
-    run_name: str | None = field(default=None, metadata={"help": "Name of this specific run"})
-    log_interval: int = field(default=50, metadata={"help": "Log metrics every N steps"})
+    project_name: str | None = Field(default=None, description="WandB project name. If None, WandB is disabled.")
+    run_name: str | None = Field(default=None, description="Name of this specific run")
+    log_interval: int = Field(default=50, description="Log metrics every N steps")
     
     # Optimization
-    epochs: int = field(default=20, metadata={"help": "Total training epochs"})
-    lr: float = field(default=1e-3, metadata={"help": "Peak learning rate"})
-    min_lr: float = field(default=1e-5, metadata={"help": "Minimum learning rate"})
-    warmup_ratio: float = field(default=0.1, metadata={"help": "Ratio of total steps for LR warmup"})
-    weight_decay: float = field(default=1e-4, metadata={"help": "AdamW weight decay"})
-    gradient_clip_norm: float = field(default=1.0, metadata={"help": "Max gradient norm"})
-    gradient_accumulation_steps: int = field(default=1, metadata={"help": "Number of steps to accumulate gradients before updating."})
+    epochs: int = Field(default=20, description="Total training epochs")
+    lr: float = Field(default=1e-3, description="Peak learning rate")
+    min_lr: float = Field(default=1e-5, description="Minimum learning rate")
+    warmup_ratio: float = Field(default=0.1, description="Ratio of total steps for LR warmup")
+    weight_decay: float = Field(default=1e-4, description="AdamW weight decay")
+    gradient_clip_norm: float = Field(default=1.0, description="Max gradient norm")
+    gradient_accumulation_steps: int = Field(default=1, ge=1, description="Number of steps to accumulate gradients before updating.")
     
     # System
-    seed: int = field(default=42, metadata={"help": "Random seed"})
-    device: str = field(default="auto", metadata={"help": "Accelerator: 'auto', 'cuda', 'mps', 'cpu'"})
-    use_amp: bool = field(default=True, metadata={"help": "Enable Automatic Mixed Precision (AMP)"})
-
-    def __post_init__(self):
-        if self.gradient_accumulation_steps < 1:
-            raise ValueError("gradient_accumulation_steps must be >= 1")
+    seed: int = Field(default=42, description="Random seed")
+    device: str = Field(default="auto", description="Accelerator: 'auto', 'cuda', 'mps', 'cpu'")
+    use_amp: bool = Field(default=True, description="Enable Automatic Mixed Precision (AMP)")
 # fmt: on
