@@ -12,6 +12,8 @@ from basil.config import BasilDataConfig, BasilModelConfig, BasilTrainConfig
 MODEL_FILENAME = "model.safetensors"
 CONFIG_FILENAME = "config.json"
 
+TORCH_IMPORT_ERROR = "This feature requires the optional 'torch' dependency. Please install it via 'pip install basil[train]'."
+
 # --- Optional Imports (Safe for Inference) ---
 # Guards ensure this module is safe for inference environments without Torch.
 try:
@@ -46,7 +48,7 @@ def setup_device(request: str) -> "torch.device":
     Raises ImportError if torch is not installed.
     """
     if torch is None:
-        raise ImportError("Torch is not installed. Cannot setup device.")
+        raise ImportError(TORCH_IMPORT_ERROR)
 
     if request != "auto":
         return torch.device(request)
@@ -72,7 +74,7 @@ def save_checkpoint(
     from basil import __version__
 
     if torch is None:
-        raise ImportError("Torch is not installed. Cannot save checkpoint.")
+        raise ImportError(TORCH_IMPORT_ERROR)
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -122,7 +124,7 @@ def _export_onnx_set(model: torch.nn.Module, cfg: BasilModelConfig, out_dir: Pat
     Internal helper to export Encoder/Decoder pairs. Uses deepcopy + CPU move.
     """
     if torch is None:
-        raise ImportError("Torch is not installed. Cannot export to ONNX.")
+        raise ImportError(TORCH_IMPORT_ERROR)
 
     # Create a disposable CPU copy.
     export_model = copy.deepcopy(model).to("cpu")

@@ -5,6 +5,9 @@ import yaml
 
 from basil.config import BasilDataConfig, BasilModelConfig, BasilTrainConfig
 from basil.training.trainer import BasilTrainer
+from basil.utils import setup_logging
+
+logger = setup_logging(__name__)
 
 
 def main():
@@ -12,6 +15,7 @@ def main():
     parser.add_argument("config", type=str, help="Path to config.yaml")
     args = parser.parse_args()
 
+    logger.info(f"Loading config from {args.config}")
     with open(args.config, "r") as f:
         raw = yaml.safe_load(f)
 

@@ -5,7 +5,14 @@ from typing import List, Literal, Protocol, Union
 import numpy as np
 
 # Importing constants ensures we look for the same files the trainer saved
-from basil.utils import CONFIG_FILENAME, MODEL_FILENAME
+from basil.utils import (
+    CONFIG_FILENAME,
+    MODEL_FILENAME,
+    TORCH_IMPORT_ERROR,
+    setup_logging,
+)
+
+logger = setup_logging(__name__)
 
 
 # -------------------------------------------------------------------------
@@ -26,6 +33,8 @@ class OnnxBackend:
 
     def __init__(self, artifact_path: Path):
         import onnxruntime as ort
+
+        logger.info(f"Loading ONNX backend from {artifact_path}")
 
         # Suppress excessive ONNX runtime logs
         opts = ort.SessionOptions()
@@ -64,7 +73,9 @@ class TorchBackend:
             from basil.config import BasilModelConfig
             from basil.training.model import RQVAE
         except ImportError as e:
-            raise ImportError("backend='torch' requires 'basil[train]'.") from e
+            raise ImportError(TORCH_IMPORT_ERROR) from e
+
+        logger.info(f"Loading Torch backend from {artifact_path}")
 
         self.torch = torch
 
@@ -103,6 +114,8 @@ class BasilCodec:
         self.path = Path(checkpoint_dir)
         if not self.path.exists():
             raise FileNotFoundError(f"Checkpoint not found at {self.path}")
+
+        logger.info(f"Initializing BasilCodec with {backend} backend from {self.path}")
 
         with open(self.path / CONFIG_FILENAME, "r") as f:
             self.meta = json.load(f)
