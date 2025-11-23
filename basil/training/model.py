@@ -15,6 +15,7 @@ class VectorQuantizer(nn.Module):
         dim: int,
         codebook_size: int,
         ema_decay: float = 0.99,
+        reset_code_interval: int = 200,
         stochastic: bool = False,
         temperature: float = 1.0,
     ):
@@ -25,10 +26,9 @@ class VectorQuantizer(nn.Module):
         self.stochastic_sampling = stochastic
         self.temperature = temperature
         self.epsilon = 1e-5
+        self.usage_threshold = self.ema_decay**reset_code_interval
 
-        # Initialize embedding uniformly in [-1/codebook_size, 1/codebook_size]
-        scale = 1.0 / codebook_size
-        embedding = torch.zeros(codebook_size, dim).uniform_(-scale, scale)
+        embedding = F.normalize(torch.randn(codebook_size, dim))
         self.register_buffer("embedding", embedding)
         self.register_buffer("ema_cluster_size", torch.ones(codebook_size))
         self.register_buffer("ema_w", embedding.clone())
@@ -124,7 +124,7 @@ class VectorQuantizer(nn.Module):
     @torch.no_grad()
     def _restart_dead_codes(self, x: torch.Tensor):
         """Reset codes with low usage by sampling from current batch."""
-        dead_mask = self.ema_cluster_size < 1.0
+        dead_mask = self.ema_cluster_size < self.usage_threshold
         if not dead_mask.any():
             return
 
@@ -143,33 +143,24 @@ class ResidualVectorQuantizer(nn.Module):
     Supports hierarchical codebook sizes.
     """
 
-    def __init__(
-        self,
-        num_levels: int,
-        codebook_size: int,
-        embedding_dim: int,
-        beta: float = 0.25,
-        use_hierarchical: bool = False,
-        ema_decay: float = 0.99,
-        stochastic_sampling: bool = False,
-        stochastic_temperature: float = 1.0,
-    ):
+    def __init__(self, config, embedding_dim: int):
         super().__init__()
-        self.num_levels = num_levels
-        self.base_codebook_size = codebook_size
+        self.config = config
+        self.num_levels = config.num_levels
+        self.base_codebook_size = config.codebook_size
         self.embedding_dim = embedding_dim
-        self.beta = beta
-        self.use_hierarchical = use_hierarchical
+        self.beta = config.commitment_beta
+        self.use_hierarchical = config.use_hierarchical
 
         # Determine codebook sizes for each level
-        if use_hierarchical:
+        if config.use_hierarchical:
             # Hierarchical: size, size//2, size//4, ...
             codebook_sizes = [
-                max(codebook_size // (2**i), 8) for i in range(num_levels)
+                max(config.codebook_size // (2**i), 8) for i in range(config.num_levels)
             ]
         else:
             # Uniform: all levels have the same size
-            codebook_sizes = [codebook_size] * num_levels
+            codebook_sizes = [config.codebook_size] * config.num_levels
 
         # Create VectorQuantizer layers
         self.layers = nn.ModuleList(
@@ -177,9 +168,10 @@ class ResidualVectorQuantizer(nn.Module):
                 VectorQuantizer(
                     dim=embedding_dim,
                     codebook_size=size,
-                    ema_decay=ema_decay,
-                    stochastic=stochastic_sampling,
-                    temperature=stochastic_temperature,
+                    ema_decay=config.ema_decay,
+                    reset_code_interval=config.reset_code_interval,
+                    stochastic=config.stochastic_sampling,
+                    temperature=config.stochastic_temperature,
                 )
                 for size in codebook_sizes
             ]
@@ -272,14 +264,8 @@ class RQVAE(nn.Module):
         )
 
         self.quantizer = ResidualVectorQuantizer(
-            num_levels=config.num_levels,
-            codebook_size=config.codebook_size,
+            config=config,
             embedding_dim=config.latent_dim,
-            beta=config.commitment_beta,
-            use_hierarchical=config.use_hierarchical,
-            ema_decay=config.ema_decay,
-            stochastic_sampling=config.stochastic_sampling,
-            stochastic_temperature=config.stochastic_temperature,
         )
 
         self.decoder = nn.Sequential(

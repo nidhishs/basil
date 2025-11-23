@@ -19,6 +19,7 @@ class BasilModelConfig(BaseModel):
     commitment_beta: float = Field(default=0.25, description="Weight of the commitment loss")
     use_hierarchical: bool = Field(default=False, description="Use hierarchical codebook sizes where each level is half the size of the previous level")
     ema_decay: float = Field(default=0.99, description="EMA decay factor for codebook updates")
+    reset_code_interval: int = Field(default=200, description="Number of steps a code can be unused before being reset.")
     stochastic_sampling: bool = Field(default=True, description="Use random sampling during training")
     stochastic_temperature: float = Field(default=0.6, description="Temperature for stochastic sampling (higher = more random)")
 
