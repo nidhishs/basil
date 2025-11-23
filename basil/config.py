@@ -66,7 +66,7 @@ class BasilTrainConfig:
     # Logic
     kmeans_init: bool = field(default=True, metadata={"help": "Run KMeans init on first batch"})
     reset_unused_codes: bool = field(default=True, metadata={"help": "Reset dead codes at epoch end"})
-    reset_threshold: float = field(default=1.0, metadata={"help": "Utilization threshold below which reset triggers"})
+    reset_threshold: float = field(default=0.95, metadata={"help": "Utilization threshold below which reset triggers"})
     
     # System
     seed: int = field(default=42, metadata={"help": "Random seed"})

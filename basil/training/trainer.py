@@ -269,7 +269,7 @@ class BasilTrainer:
 
         with torch.no_grad():
             z = self.model.encoder(batch)
-            self.model.quantizer.reset_dead_codes(z)
+            self.model.quantizer.reset_dead_codes(z, self.optimizer)
 
     def _save_checkpoint(self, target_path: Path, final: bool = False):
         save_checkpoint(

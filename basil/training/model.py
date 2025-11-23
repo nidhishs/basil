@@ -24,8 +24,9 @@ class ResidualVectorQuantizer(nn.Module):
         )
 
         # Initialize standard normal to match latent space distribution
-        for cb in self.codebooks:
-            nn.init.normal_(cb.weight, mean=0.0, std=1.0)
+        # Decay initialization variance for deeper levels
+        for i, cb in enumerate(self.codebooks):
+            nn.init.normal_(cb.weight, mean=0.0, std=1.0 / (2**i))
 
     @staticmethod
     def _compute_distances(x: torch.Tensor, c: torch.Tensor) -> torch.Tensor:
@@ -124,32 +125,61 @@ class ResidualVectorQuantizer(nn.Module):
 
         return z_q, indices, metrics
 
+    @staticmethod
+    def _wipe_optimizer_state(
+        optimizer: torch.optim.Optimizer, param: torch.nn.Parameter, mask: torch.Tensor
+    ):
+        """
+        Zeroes out momentum (exp_avg) and variance (exp_avg_sq) for specific indices in the optimizer state to prevent 'slingshotting'.
+        """
+        if optimizer is None or param not in optimizer.state:
+            return
+
+        state = optimizer.state[param]
+        for key in ["exp_avg", "exp_avg_sq"]:
+            if key in state:
+                state[key][mask] = 0.0
+
     @torch.no_grad()
-    def reset_dead_codes(self, batch_samples: torch.Tensor):
+    def reset_dead_codes(
+        self, batch_samples: torch.Tensor, optimizer: torch.optim.Optimizer = None
+    ):
         """
         Replaces unused codes with random vectors from the current batch.
         """
         residual = batch_samples
 
         for layer in self.codebooks:
+            # 1. Identify usage
+            # Find which codebook entries are best matches for current residuals
             dists = self._compute_distances(residual, layer.weight)
             indices = torch.argmin(dists, dim=-1)
 
             counts = torch.bincount(indices, minlength=self.codebook_size)
             dead_mask = counts == 0
-            n_dead = dead_mask.sum().item()
 
-            if n_dead == 0:
-                continue
+            # 2. Reset (if needed)
+            if dead_mask.any():
+                n_dead = dead_mask.sum().item()
 
-            replacements = []
-            while len(replacements) < n_dead:
-                perm = torch.randperm(residual.size(0), device=residual.device)
-                replacements.append(residual[perm])
+                # Randomly sample vectors from the current batch to replace dead codes.
+                # This ensures revived codes are immediately relevant to the data distribution.
+                random_idxs = torch.randint(
+                    0, residual.size(0), (n_dead,), device=residual.device
+                )
+                replacements = residual[random_idxs]
 
-            flat_replacements = torch.cat(replacements, dim=0)[:n_dead]
-            layer.weight.data[dead_mask] = flat_replacements
+                # Update weights in-place
+                layer.weight.data[dead_mask] = replacements
 
+                # IMPORTANT: Reset optimizer state for these specific weights.
+                # Keeping old momentum for new random weights causes massive gradient updates (slingshotting).
+                self._wipe_optimizer_state(optimizer, layer.weight, dead_mask)
+
+            # 3. Propagate Residual
+            # Must update residual for the next layer using the ORIGINAL selections.
+            # Even if we reset codes, they weren't selected in this pass, so they don't affect the residual yet.
+            # This ensures the hierarchy remains consistent for subsequent layers.
             z_q_local = layer(indices)
             residual = residual - z_q_local
 
