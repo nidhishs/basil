@@ -4,7 +4,6 @@ from pathlib import Path
 
 import torch
 import torch.nn.functional as F
-from sklearn.cluster import MiniBatchKMeans
 
 # Top-level optional import to check availability
 try:
@@ -114,9 +113,6 @@ class BasilTrainer:
             anneal_strategy="cos",
         )
 
-        if self.train_cfg.kmeans_init:
-            self._run_kmeans()
-
     def train(self):
         self.setup()
         self.global_step = 0
@@ -124,9 +120,6 @@ class BasilTrainer:
 
         for epoch in range(self.train_cfg.epochs):
             self._train_epoch(epoch)
-
-            if self.train_cfg.reset_unused_codes:
-                self._reset_codes()
 
             if self.wandb_active:
                 self._log_epoch_histograms(epoch)
@@ -158,7 +151,9 @@ class BasilTrainer:
 
             with ctx:
                 x_recon, indices, metrics = self.model(batch)
-                recon_loss = F.mse_loss(x_recon, batch)
+                recon_loss = (
+                    F.mse_loss(x_recon, batch, reduction="none").sum(dim=-1).mean()
+                )
                 loss = recon_loss + metrics["vq_loss"]
                 # Scale loss for gradient accumulation
                 loss = loss / accum_steps
@@ -169,6 +164,7 @@ class BasilTrainer:
             # Calculate utilization
             unique_rows = len(torch.unique(indices, dim=0))
             utilization = unique_rows / batch.size(0)
+            cos_sim = F.cosine_similarity(x_recon.detach(), batch, dim=-1).mean()
 
             # Track metrics (unscaled)
             tracker.update(
@@ -176,9 +172,9 @@ class BasilTrainer:
                     "total_loss": loss.item() * accum_steps,
                     "recon_loss": recon_loss.item(),
                     "vq_loss": metrics["vq_loss"].item(),
-                    "codebook_loss": metrics["codebook_loss"].item(),
                     "commitment_loss": metrics["commitment_loss"].item(),
                     "perplexity": metrics["perplexity"].item(),
+                    "cos_sim": cos_sim.item(),
                 },
                 n=batch.size(0),
             )
@@ -245,12 +241,15 @@ class BasilTrainer:
 
             with ctx:
                 x_recon, indices, metrics = self.model(batch)
-                recon_loss = F.mse_loss(x_recon, batch)
+                recon_loss = (
+                    F.mse_loss(x_recon, batch, reduction="none").sum(dim=-1).mean()
+                )
                 loss = recon_loss + metrics["vq_loss"]
 
             # Instantaneous utilization for logging (last batch)
             unique_rows = len(torch.unique(indices, dim=0))
             utilization = unique_rows / batch.size(0)
+            cos_sim = F.cosine_similarity(x_recon, batch, dim=-1).mean()
 
             tracker.update(
                 {
@@ -258,6 +257,7 @@ class BasilTrainer:
                     "recon_loss": recon_loss.item(),
                     "vq_loss": metrics["vq_loss"].item(),
                     "perplexity": metrics["perplexity"].item(),
+                    "cos_sim": cos_sim.item(),
                 },
                 n=batch.size(0),
             )
@@ -293,45 +293,6 @@ class BasilTrainer:
             )
 
         wandb.log(hist_dict, step=self.global_step)
-
-    def _run_kmeans(self):
-        logger.info("Running KMeans Init...")
-        try:
-            # Load on CPU first to avoid GPU OOM if batch is huge
-            batch = next(iter(self.train_loader)).cpu()
-        except StopIteration:
-            return
-
-        with torch.no_grad():
-            # Move to device for encoding
-            residual = self.model.encoder(batch.to(self.device)).cpu()
-
-            for layer in self.model.quantizer.codebooks:
-                km = MiniBatchKMeans(
-                    n_clusters=self.model_cfg.codebook_size, n_init="auto"
-                )
-                km.fit(residual.float().numpy())
-
-                centroids = torch.from_numpy(km.cluster_centers_)
-                layer.weight.data.copy_(centroids.to(self.device))
-
-                dists = self.model.quantizer._compute_distances(
-                    residual.to(self.device), layer.weight
-                )
-                idx = torch.argmin(dists, dim=-1)
-                residual = residual - layer.weight[idx].cpu()
-
-        logger.info("KMeans Init Complete.")
-
-    def _reset_codes(self):
-        try:
-            batch = next(iter(self.train_loader)).to(self.device)
-        except StopIteration:
-            return
-
-        with torch.no_grad():
-            z = self.model.encoder(batch)
-            self.model.quantizer.reset_dead_codes(z, self.optimizer)
 
     def _save_checkpoint(self, target_path: Path, final: bool = False):
         save_checkpoint(

@@ -15,6 +15,8 @@ class BasilModelConfig:
     num_levels: int = field(default=3, metadata={"help": "Depth of residual quantization"})
     dropout: float = field(default=0.1, metadata={"help": "Dropout probability for regularization"})
     commitment_beta: float = field(default=0.25, metadata={"help": "Weight of the commitment loss"})
+    use_hierarchical: bool = field(default=False, metadata={"help": "Use hierarchical codebook sizes where each level is half the size of the previous level"})
+    ema_decay: float = field(default=0.99, metadata={"help": "EMA decay factor for codebook updates"})
 
 
 @dataclass
@@ -60,11 +62,6 @@ class BasilTrainConfig:
     weight_decay: float = field(default=1e-4, metadata={"help": "AdamW weight decay"})
     gradient_clip_norm: float = field(default=1.0, metadata={"help": "Max gradient norm"})
     gradient_accumulation_steps: int = field(default=1, metadata={"help": "Number of steps to accumulate gradients before updating."})
-    
-    # Logic
-    kmeans_init: bool = field(default=True, metadata={"help": "Run KMeans init on first batch"})
-    reset_unused_codes: bool = field(default=True, metadata={"help": "Reset dead codes at epoch end"})
-    reset_threshold: float = field(default=0.95, metadata={"help": "Utilization threshold below which reset triggers"})
     
     # System
     seed: int = field(default=42, metadata={"help": "Random seed"})
