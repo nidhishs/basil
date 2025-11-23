@@ -52,9 +52,6 @@ class BasilTrainConfig:
     run_name: Optional[str] = field(default=None, metadata={"help": "Name of this specific run"})
     log_interval: int = field(default=50, metadata={"help": "Log metrics every N steps"})
     
-    # Checkpointing
-    save_ratio: float = field(default=0.25, metadata={"help": "Save checkpoint every fraction of total steps"})
-    
     # Optimization
     epochs: int = field(default=20, metadata={"help": "Total training epochs"})
     lr: float = field(default=1e-3, metadata={"help": "Peak learning rate"})
@@ -75,9 +72,6 @@ class BasilTrainConfig:
     use_amp: bool = field(default=True, metadata={"help": "Enable Automatic Mixed Precision (AMP)"})
 
     def __post_init__(self):
-        if not (0.0 <= self.save_ratio <= 1.0):
-            raise ValueError(f"save_ratio must be >= 0.0 and <= 1.0, got {self.save_ratio}")
-            
         if self.gradient_accumulation_steps < 1:
             raise ValueError("gradient_accumulation_steps must be >= 1")
 # fmt: on

@@ -105,7 +105,6 @@ class BasilTrainer:
         )
 
         self.total_steps = len(self.train_loader) * self.train_cfg.epochs
-        self.save_interval = max(1, int(self.total_steps * self.train_cfg.save_ratio))
 
         self.scheduler = torch.optim.lr_scheduler.OneCycleLR(
             self.optimizer,
@@ -205,9 +204,6 @@ class BasilTrainer:
                 avg_metrics = tracker.average()
                 self._log_step(avg_metrics, "train", utilization)
                 tracker.reset()  # Reset tracker after logging
-
-            if self.global_step > 0 and self.global_step % self.save_interval == 0:
-                self._save_checkpoint(self.out_root / f"checkpoint-{self.global_step}")
 
     def _log_step(self, metrics, prefix, utilization=None):
         lr = self.scheduler.get_last_lr()[0]
