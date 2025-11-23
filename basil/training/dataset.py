@@ -1,5 +1,6 @@
+from __future__ import annotations
+
 from pathlib import Path
-from typing import Tuple
 
 import numpy as np
 import torch
@@ -56,7 +57,7 @@ class LinearMmapDataset(Dataset):
         return torch.from_numpy(self.data[idx].copy())
 
 
-def get_dataset(cfg: BasilDataConfig) -> Tuple[Dataset, Dataset]:
+def get_dataset(cfg: BasilDataConfig) -> tuple[Dataset, Dataset]:
     # The factory pattern abstracts away the I/O complexity (RAM vs Disk) from the trainer.
 
     ds_cls = LinearMmapDataset if cfg.stream else MemoryDataset

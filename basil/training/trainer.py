@@ -1,4 +1,5 @@
-import time
+from __future__ import annotations
+
 from contextlib import nullcontext
 from pathlib import Path
 
@@ -116,8 +117,16 @@ class BasilTrainer:
     def train(self):
         self.setup()
         self.global_step = 0
-        logger.info(f"Starting training. Total steps: {self.total_steps}")
+        
+        _ckpt_args = (
+            self.model,
+            self.model_cfg,
+            self.train_cfg,
+            self.data_cfg,
+            self.out_root,
+        )
 
+        logger.info(f"Starting training. Total steps: {self.total_steps}")
         for epoch in range(self.train_cfg.epochs):
             self._train_epoch(epoch)
 
@@ -127,10 +136,11 @@ class BasilTrainer:
             self._validate_epoch(epoch)
 
             if self.global_step > 0:
-                self._save_checkpoint(self.out_root / f"epoch-{epoch}")
+                out_dir = self.out_root / f"e-{epoch}"
+                save_checkpoint(*_ckpt_args, out_dir=out_dir, export_onnx=False)
 
-        # Final Save (with ONNX export)
-        self._save_checkpoint(self.out_root, final=True)
+        save_checkpoint(*_ckpt_args, out_dir=self.out_root, export_onnx=True)
+
         logger.info(f"Training complete. Saved to {self.out_root}")
 
     def _train_epoch(self, epoch):
@@ -162,8 +172,6 @@ class BasilTrainer:
             loss.backward()
 
             # Calculate utilization
-            unique_rows = len(torch.unique(indices, dim=0))
-            utilization = unique_rows / batch.size(0)
             cos_sim = F.cosine_similarity(x_recon.detach(), batch, dim=-1).mean()
 
             # Track metrics (unscaled)
@@ -172,9 +180,12 @@ class BasilTrainer:
                     "total_loss": loss.item() * accum_steps,
                     "recon_loss": recon_loss.item(),
                     "vq_loss": metrics["vq_loss"].item(),
-                    "commitment_loss": metrics["commitment_loss"].item(),
-                    "perplexity": metrics["perplexity"].item(),
+                    "commit_loss": metrics["commit_loss"].item(),
                     "cos_sim": cos_sim.item(),
+                    **{
+                        f"ppl_{i}": p.item()
+                        for i, p in enumerate(metrics["perplexity"])
+                    },
                 },
                 n=batch.size(0),
             )
@@ -198,29 +209,26 @@ class BasilTrainer:
             # 5. Logging (Only on update steps)
             if self.global_step % self.train_cfg.log_interval == 0:
                 avg_metrics = tracker.average()
-                self._log_step(avg_metrics, "train", utilization)
+                self._log_step(avg_metrics, "train")
                 tracker.reset()  # Reset tracker after logging
 
-    def _log_step(self, metrics, prefix, utilization=None):
-        lr = self.scheduler.get_last_lr()[0]
-
-        # Create a concise log string from metrics
-        metrics_str = " | ".join(f"{k}: {v:.4f}" for k, v in metrics.items())
-
-        # Add utilization if present
-        util_str = f" | Util: {utilization:.2f}" if utilization is not None else ""
-
-        logger.info(
-            f"Step {self.global_step} | {prefix} | " f"{metrics_str}" f"{util_str}"
+    def _log_step(self, metrics, prefix):
+        msg = [f"Step {self.global_step}", prefix]
+        msg.extend(
+            f"{k}: {v:.4f}" for k, v in metrics.items() if not k.startswith("ppl_")
         )
+        if ppls := [v for k, v in metrics.items() if k.startswith("ppl_")]:
+            msg.append(f"ppl: {', '.join(f'{p:.0f}' for p in ppls)}")
 
-        if self.wandb_active:
-            log_dict = {f"{prefix}/{k}": v for k, v in metrics.items()}
-            if utilization is not None:
-                log_dict[f"{prefix}/utilization"] = utilization
-            if prefix == "train":
-                log_dict[f"{prefix}/lr"] = lr
-            wandb.log(log_dict, step=self.global_step)
+        logger.info(" | ".join(msg))
+
+        if not self.wandb_active:
+            return
+
+        data = {f"{prefix}/{k}": v for k, v in metrics.items()}
+        if prefix == "train":
+            data[f"{prefix}/lr"] = self.scheduler.get_last_lr()[0]
+        wandb.log(data, step=self.global_step)
 
     @torch.no_grad()
     def _validate_epoch(self, epoch):
@@ -240,15 +248,13 @@ class BasilTrainer:
             )
 
             with ctx:
-                x_recon, indices, metrics = self.model(batch)
+                x_recon, _, metrics = self.model(batch)
                 recon_loss = (
                     F.mse_loss(x_recon, batch, reduction="none").sum(dim=-1).mean()
                 )
                 loss = recon_loss + metrics["vq_loss"]
 
             # Instantaneous utilization for logging (last batch)
-            unique_rows = len(torch.unique(indices, dim=0))
-            utilization = unique_rows / batch.size(0)
             cos_sim = F.cosine_similarity(x_recon, batch, dim=-1).mean()
 
             tracker.update(
@@ -256,8 +262,11 @@ class BasilTrainer:
                     "total_loss": loss.item(),
                     "recon_loss": recon_loss.item(),
                     "vq_loss": metrics["vq_loss"].item(),
-                    "perplexity": metrics["perplexity"].item(),
                     "cos_sim": cos_sim.item(),
+                    **{
+                        f"ppl_{lvl}": ppl.item()
+                        for lvl, ppl in enumerate(metrics["perplexity"])
+                    },
                 },
                 n=batch.size(0),
             )
@@ -267,7 +276,7 @@ class BasilTrainer:
         if not avg:
             return
 
-        self._log_step(avg, "val", utilization)
+        self._log_step(avg, "val")
 
         self.model.train()
 
@@ -293,13 +302,3 @@ class BasilTrainer:
             )
 
         wandb.log(hist_dict, step=self.global_step)
-
-    def _save_checkpoint(self, target_path: Path, final: bool = False):
-        save_checkpoint(
-            self.model,
-            self.model_cfg,
-            self.train_cfg,
-            self.data_cfg,
-            target_path,
-            export_onnx=final,
-        )

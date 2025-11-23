@@ -7,7 +7,6 @@ import sys
 from collections import defaultdict
 from dataclasses import asdict
 from pathlib import Path
-from typing import Dict
 
 from basil.config import BasilDataConfig, BasilModelConfig, BasilTrainConfig
 
@@ -53,7 +52,7 @@ class MetricsTracker:
         self.count = defaultdict(int)
         self.total_samples = 0
 
-    def update(self, metrics: Dict[str, float], n: int = 1):
+    def update(self, metrics: dict[str, float], n: int = 1):
         """
         metrics: Dictionary of metric names and their values.
         n: Batch size (weight).
@@ -63,11 +62,11 @@ class MetricsTracker:
             self.val[k] += v * n
             self.count[k] += n
 
-    def average(self) -> Dict[str, float]:
+    def average(self) -> dict[str, float]:
         return {k: self.val[k] / self.count[k] for k in self.val}
 
 
-def setup_device(request: str) -> "torch.device":
+def setup_device(request: str) -> torch.device:
     """
     Auto-detects the best available hardware (CUDA > MPS > CPU).
     Raises ImportError if torch is not installed.

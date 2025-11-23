@@ -1,5 +1,6 @@
+from __future__ import annotations
+
 from dataclasses import dataclass, field
-from typing import Optional
 
 
 # fmt: off
@@ -17,6 +18,8 @@ class BasilModelConfig:
     commitment_beta: float = field(default=0.25, metadata={"help": "Weight of the commitment loss"})
     use_hierarchical: bool = field(default=False, metadata={"help": "Use hierarchical codebook sizes where each level is half the size of the previous level"})
     ema_decay: float = field(default=0.99, metadata={"help": "EMA decay factor for codebook updates"})
+    stochastic_sampling: bool = field(default=True, metadata={"help": "Use random sampling during training"})
+    stochastic_temperature: float = field(default=0.6, metadata={"help": "Temperature for stochastic sampling (higher = more random)"})
 
 
 @dataclass
@@ -50,8 +53,8 @@ class BasilTrainConfig:
     Hyperparameters and System config.
     """
     # Logging
-    project_name: Optional[str] = field(default=None, metadata={"help": "WandB project name. If None, WandB is disabled."})
-    run_name: Optional[str] = field(default=None, metadata={"help": "Name of this specific run"})
+    project_name: str | None = field(default=None, metadata={"help": "WandB project name. If None, WandB is disabled."})
+    run_name: str | None = field(default=None, metadata={"help": "Name of this specific run"})
     log_interval: int = field(default=50, metadata={"help": "Log metrics every N steps"})
     
     # Optimization

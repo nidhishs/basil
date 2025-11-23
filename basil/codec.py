@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from typing import List, Literal, Protocol, Union
+from typing import Literal, Protocol
 
 import numpy as np
 
@@ -108,7 +108,7 @@ class TorchBackend:
 class BasilCodec:
     def __init__(
         self,
-        checkpoint_dir: Union[str, Path],
+        checkpoint_dir: str | Path,
         backend: Literal["onnx", "torch"] = "onnx",
     ):
         self.path = Path(checkpoint_dir)
@@ -127,7 +127,7 @@ class BasilCodec:
         else:
             raise ValueError(f"Unknown backend: {backend}")
 
-    def encode(self, vector: np.ndarray) -> List[int]:
+    def encode(self, vector: np.ndarray) -> list[int]:
         if vector.ndim == 1:
             vector = vector[np.newaxis, :]
         return self._backend.batch_encode(vector)[0].tolist()
@@ -135,7 +135,7 @@ class BasilCodec:
     def batch_encode(self, vectors: np.ndarray) -> np.ndarray:
         return self._backend.batch_encode(vectors)
 
-    def decode(self, semantic_ids: List[int]) -> np.ndarray:
+    def decode(self, semantic_ids: list[int]) -> np.ndarray:
         arr = np.array(semantic_ids)[np.newaxis, :]
         return self._backend.batch_decode(arr)[0]
 

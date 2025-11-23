@@ -1,4 +1,4 @@
-from typing import Dict, Tuple
+from __future__ import annotations
 
 import torch
 import torch.nn as nn
@@ -10,11 +10,20 @@ class VectorQuantizer(nn.Module):
     Single Vector Quantization layer with EMA updates and dead code restart.
     """
 
-    def __init__(self, dim: int, codebook_size: int, ema_decay: float = 0.99):
+    def __init__(
+        self,
+        dim: int,
+        codebook_size: int,
+        ema_decay: float = 0.99,
+        stochastic: bool = False,
+        temperature: float = 1.0,
+    ):
         super().__init__()
         self.dim = dim
         self.codebook_size = codebook_size
         self.ema_decay = ema_decay
+        self.stochastic_sampling = stochastic
+        self.temperature = temperature
         self.epsilon = 1e-5
 
         # Initialize embedding uniformly in [-1/codebook_size, 1/codebook_size]
@@ -47,7 +56,7 @@ class VectorQuantizer(nn.Module):
 
     def forward(
         self, x: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Args:
             x: Input tensor of shape (batch_size, dim)
@@ -55,14 +64,20 @@ class VectorQuantizer(nn.Module):
         Returns:
             quantized: Quantized vectors (batch_size, dim)
             indices: Codebook indices (batch_size,)
-            commitment_loss: Commitment loss scalar
+            commit_loss: Commitment loss scalar
         """
         input_shape = x.shape
         flat_x = x.reshape(-1, self.dim)
 
         # Find nearest codebook entries
         distances = self.compute_distances(flat_x, self.embedding)
-        indices = torch.argmin(distances, dim=1)
+
+        if self.training and self.stochastic_sampling:
+            logits = -distances / self.temperature
+            indices = torch.multinomial(F.softmax(logits, dim=-1), 1).squeeze(-1)
+        else:
+            indices = torch.argmin(distances, dim=1)
+
         quantized = F.embedding(indices, self.embedding)
 
         # EMA Update (only during training)
@@ -70,13 +85,13 @@ class VectorQuantizer(nn.Module):
             self._ema_update(flat_x, indices)
 
         # Commitment loss: encourages encoder output to stay close to chosen code
-        commitment_loss = F.mse_loss(quantized.detach(), flat_x)
+        commit_loss = F.mse_loss(quantized.detach(), flat_x)
 
         # Straight-through estimator: quantized for forward, x for backward
         quantized = flat_x + (quantized - flat_x).detach()
         quantized = quantized.reshape(input_shape)
 
-        return quantized, indices, commitment_loss
+        return quantized, indices, commit_loss
 
     @torch.no_grad()
     def _ema_update(self, x: torch.Tensor, indices: torch.Tensor):
@@ -136,6 +151,8 @@ class ResidualVectorQuantizer(nn.Module):
         beta: float = 0.25,
         use_hierarchical: bool = False,
         ema_decay: float = 0.99,
+        stochastic_sampling: bool = False,
+        stochastic_temperature: float = 1.0,
     ):
         super().__init__()
         self.num_levels = num_levels
@@ -156,7 +173,16 @@ class ResidualVectorQuantizer(nn.Module):
 
         # Create VectorQuantizer layers
         self.layers = nn.ModuleList(
-            [VectorQuantizer(embedding_dim, size, ema_decay) for size in codebook_sizes]
+            [
+                VectorQuantizer(
+                    dim=embedding_dim,
+                    codebook_size=size,
+                    ema_decay=ema_decay,
+                    stochastic=stochastic_sampling,
+                    temperature=stochastic_temperature,
+                )
+                for size in codebook_sizes
+            ]
         )
 
     @staticmethod
@@ -178,7 +204,7 @@ class ResidualVectorQuantizer(nn.Module):
 
     def forward(
         self, z: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
+    ) -> tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
         """
         Args:
             z: Latent vectors (batch_size, embedding_dim)
@@ -192,15 +218,15 @@ class ResidualVectorQuantizer(nn.Module):
         quantized_sum = torch.zeros_like(z)
         indices_list = []
 
-        total_commitment_loss = 0.0
+        total_commit_loss = 0.0
 
         for layer in self.layers:
             # Quantize current residual
-            quantized, indices, commitment_loss = layer(residual)
+            quantized, indices, commit_loss = layer(residual)
 
             # Accumulate
             indices_list.append(indices)
-            total_commitment_loss += commitment_loss
+            total_commit_loss += commit_loss
 
             # Update residual for next level
             residual = residual - quantized
@@ -210,15 +236,17 @@ class ResidualVectorQuantizer(nn.Module):
         indices = torch.stack(indices_list, dim=-1)
 
         # Calculate metrics
-        # Use the maximum codebook size to ensure all codes are counted
-        max_codebook_size = max(layer.codebook_size for layer in self.layers)
-        perplexity = self._calculate_perplexity(indices, max_codebook_size)
-        vq_loss = self.beta * total_commitment_loss
+        perplexities = []
+        for i, layer in enumerate(self.layers):
+            ppl = self._calculate_perplexity(indices[..., i], layer.codebook_size)
+            perplexities.append(ppl)
+
+        vq_loss = self.beta * total_commit_loss
 
         metrics = {
             "vq_loss": vq_loss,
-            "commitment_loss": total_commitment_loss,
-            "perplexity": perplexity,
+            "commit_loss": total_commit_loss,
+            "perplexity": torch.stack(perplexities),
         }
 
         # Final output with straight-through estimator
@@ -250,6 +278,8 @@ class RQVAE(nn.Module):
             beta=config.commitment_beta,
             use_hierarchical=config.use_hierarchical,
             ema_decay=config.ema_decay,
+            stochastic_sampling=config.stochastic_sampling,
+            stochastic_temperature=config.stochastic_temperature,
         )
 
         self.decoder = nn.Sequential(
