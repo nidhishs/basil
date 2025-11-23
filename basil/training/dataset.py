@@ -1,8 +1,9 @@
 from pathlib import Path
+from typing import Tuple
 
 import numpy as np
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, Subset, random_split
 
 from basil.config import BasilDataConfig
 from basil.utils import setup_logging
@@ -55,8 +56,23 @@ class LinearMmapDataset(Dataset):
         return torch.from_numpy(self.data[idx].copy())
 
 
-def get_dataset(cfg: BasilDataConfig) -> Dataset:
+def get_dataset(cfg: BasilDataConfig) -> Tuple[Dataset, Dataset]:
     # The factory pattern abstracts away the I/O complexity (RAM vs Disk) from the trainer.
+
+    ds_cls = LinearMmapDataset if cfg.stream else MemoryDataset
+    ds = ds_cls(cfg.path)
+
+    total_len = len(ds)
+    val_len = int(total_len * cfg.val_set_size)
+    train_len = total_len - val_len
+
     if cfg.stream:
-        return LinearMmapDataset(cfg.path)
-    return MemoryDataset(cfg.path)
+        # For streaming/mmap, use contiguous blocks to minimize disk seeking
+        # Train on the first part, validate on the last part
+        train_ds = Subset(ds, range(0, train_len))
+        val_ds = Subset(ds, range(train_len, total_len))
+        return train_ds, val_ds
+    else:
+        # For memory, random split is fine (and preferred)
+        # Uses global torch seed set in Trainer
+        return random_split(ds, [train_len, val_len])

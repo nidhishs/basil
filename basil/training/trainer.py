@@ -15,7 +15,7 @@ except ImportError:
 from basil.config import BasilDataConfig, BasilModelConfig, BasilTrainConfig
 from basil.training.dataset import get_dataset
 from basil.training.model import RQVAE
-from basil.utils import save_checkpoint, setup_device, setup_logging
+from basil.utils import MetricsTracker, save_checkpoint, setup_device, setup_logging
 
 logger = setup_logging(__name__)
 
@@ -49,10 +49,9 @@ class BasilTrainer:
         # 3. Precision Setup
         # MPS is unstable with BF16 autocast. We force FP32 on Mac.
         # CUDA/CPU get BF16 if requested.
-        self.use_amp = (train_cfg.precision == "bf16-mixed") and (
-            self.device.type != "mps"
-        )
-        if train_cfg.precision == "bf16-mixed" and self.device.type == "mps":
+        self.use_amp = train_cfg.use_amp and (self.device.type != "mps")
+
+        if train_cfg.use_amp and self.device.type == "mps":
             logger.warning("Mixed-precision disabled for MPS stability. Using FP32.")
 
         # 4. Logging Setup (Opt-in)
@@ -72,19 +71,28 @@ class BasilTrainer:
 
     def setup(self):
         # --- Data ---
-        dataset = get_dataset(self.data_cfg)
+        train_ds, val_ds = get_dataset(self.data_cfg)
         # If streaming, data is pre-shuffled on disk. In-memory needs shuffle.
         should_shuffle = not self.data_cfg.stream
 
-        self.train_loader = torch.utils.data.DataLoader(
-            dataset,
+        loader_kwargs = dict(
             batch_size=self.data_cfg.batch_size,
-            shuffle=should_shuffle,
             num_workers=self.data_cfg.num_workers,
             pin_memory=(self.device.type == "cuda"),
-            prefetch_factor=(
-                self.data_cfg.prefetch_factor if self.data_cfg.num_workers > 0 else None
-            ),
+        )
+        if self.data_cfg.num_workers > 0:
+            loader_kwargs["prefetch_factor"] = self.data_cfg.prefetch_factor
+
+        self.train_loader = torch.utils.data.DataLoader(
+            train_ds,
+            shuffle=should_shuffle,
+            **loader_kwargs,
+        )
+
+        self.val_loader = torch.utils.data.DataLoader(
+            val_ds,
+            shuffle=False,
+            **loader_kwargs,
         )
 
         # --- Model & Optimization ---
@@ -124,6 +132,8 @@ class BasilTrainer:
             if self.wandb_active:
                 self._log_epoch_histograms(epoch)
 
+            self._validate_epoch(epoch)
+
             if self.global_step > 0:
                 self._save_checkpoint(self.out_root / f"epoch-{epoch}")
 
@@ -134,13 +144,13 @@ class BasilTrainer:
     def _train_epoch(self, epoch):
         self.model.train()
         accum_steps = self.train_cfg.gradient_accumulation_steps
+        tracker = MetricsTracker()
 
         for i, batch in enumerate(self.train_loader):
             # 1. Move Data
             batch = batch.to(self.device, non_blocking=True)
 
             # 2. Mixed Precision Context
-            # BF16 needs no GradScaler. FP16 is forbidden per config.
             ctx = (
                 torch.autocast(device_type=self.device.type, dtype=torch.bfloat16)
                 if self.use_amp
@@ -156,6 +166,23 @@ class BasilTrainer:
 
             # 3. Backward (Accumulates gradients)
             loss.backward()
+
+            # Calculate utilization
+            unique_rows = len(torch.unique(indices, dim=0))
+            utilization = unique_rows / batch.size(0)
+
+            # Track metrics (unscaled)
+            tracker.update(
+                {
+                    "total_loss": loss.item() * accum_steps,
+                    "recon_loss": recon_loss.item(),
+                    "vq_loss": metrics["vq_loss"].item(),
+                    "codebook_loss": metrics["codebook_loss"].item(),
+                    "commitment_loss": metrics["commitment_loss"].item(),
+                    "perplexity": metrics["perplexity"].item(),
+                },
+                n=batch.size(0),
+            )
 
             # 4. Update Step (Conditional)
             is_update_step = ((i + 1) % accum_steps == 0) or (
@@ -175,39 +202,78 @@ class BasilTrainer:
 
             # 5. Logging (Only on update steps)
             if self.global_step % self.train_cfg.log_interval == 0:
-                # Rescale loss back for logging visibility
-                logged_loss = loss.item() * accum_steps
-                self._log_step(logged_loss, recon_loss, metrics, indices, batch.size(0))
+                avg_metrics = tracker.average()
+                self._log_step(avg_metrics, "train", utilization)
+                tracker.reset()  # Reset tracker after logging
 
             if self.global_step > 0 and self.global_step % self.save_interval == 0:
                 self._save_checkpoint(self.out_root / f"checkpoint-{self.global_step}")
 
-    def _log_step(self, loss_val, recon, metrics, indices, batch_size):
-        unique_rows = len(torch.unique(indices, dim=0))
-        utilization = unique_rows / batch_size
+    def _log_step(self, metrics, prefix, utilization=None):
         lr = self.scheduler.get_last_lr()[0]
 
+        # Create a concise log string from metrics
+        metrics_str = " | ".join(f"{k}: {v:.4f}" for k, v in metrics.items())
+
+        # Add utilization if present
+        util_str = f" | Util: {utilization:.2f}" if utilization is not None else ""
+
         logger.info(
-            f"Step {self.global_step} | "
-            f"Loss: {loss_val:.4f} | "
-            f"Ppl: {metrics['perplexity'].item():.1f} | "
-            f"Util: {utilization:.2f}"
+            f"Step {self.global_step} | {prefix} | " f"{metrics_str}" f"{util_str}"
         )
 
         if self.wandb_active:
-            wandb.log(
-                {
-                    "train/total_loss": loss_val,
-                    "train/recon_loss": recon.item(),
-                    "train/vq_loss": metrics["vq_loss"].item(),
-                    "train/codebook_loss": metrics["codebook_loss"].item(),
-                    "train/commitment_loss": metrics["commitment_loss"].item(),
-                    "train/perplexity": metrics["perplexity"].item(),
-                    "train/batch_utilization": utilization,
-                    "train/lr": lr,
-                },
-                step=self.global_step,
+            log_dict = {f"{prefix}/{k}": v for k, v in metrics.items()}
+            if utilization is not None:
+                log_dict[f"{prefix}/utilization"] = utilization
+            if prefix == "train":
+                log_dict[f"{prefix}/lr"] = lr
+            wandb.log(log_dict, step=self.global_step)
+
+    @torch.no_grad()
+    def _validate_epoch(self, epoch):
+        self.model.eval()
+        tracker = MetricsTracker()
+
+        logger.info(f"Starting validation for epoch {epoch}...")
+
+        for batch in self.val_loader:
+            batch = batch.to(self.device, non_blocking=True)
+
+            # Mixed Precision Context
+            ctx = (
+                torch.autocast(device_type=self.device.type, dtype=torch.bfloat16)
+                if self.use_amp
+                else nullcontext()
             )
+
+            with ctx:
+                x_recon, indices, metrics = self.model(batch)
+                recon_loss = F.mse_loss(x_recon, batch)
+                loss = recon_loss + metrics["vq_loss"]
+
+            # Instantaneous utilization for logging (last batch)
+            unique_rows = len(torch.unique(indices, dim=0))
+            utilization = unique_rows / batch.size(0)
+
+            tracker.update(
+                {
+                    "total_loss": loss.item(),
+                    "recon_loss": recon_loss.item(),
+                    "vq_loss": metrics["vq_loss"].item(),
+                    "perplexity": metrics["perplexity"].item(),
+                },
+                n=batch.size(0),
+            )
+
+        avg = tracker.average()
+
+        if not avg:
+            return
+
+        self._log_step(avg, "val", utilization)
+
+        self.model.train()
 
     def _log_epoch_histograms(self, epoch):
         if not self.wandb_active:

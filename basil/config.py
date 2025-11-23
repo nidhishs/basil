@@ -24,6 +24,7 @@ class BasilDataConfig:
     strategies without changing model logic.
     """
     path: str = field(metadata={"help": "Path to the .npy dataset file"})
+    val_set_size: float = field(default=0.05, metadata={"help": "Fraction of dataset to use for validation (0.0-1.0)"})
     batch_size: int = field(default=4096, metadata={"help": "Batch size. Keep > 2048 for healthy codebooks."})
     num_workers: int = field(default=8, metadata={"help": "DataLoader workers"})
     
@@ -71,13 +72,9 @@ class BasilTrainConfig:
     # System
     seed: int = field(default=42, metadata={"help": "Random seed"})
     device: str = field(default="auto", metadata={"help": "Accelerator: 'auto', 'cuda', 'mps', 'cpu'"})
-    precision: str = field(default="bf16-mixed", metadata={"help": "Precision. 'bf16-mixed' (Recommended) or '32-true'."})
+    use_amp: bool = field(default=True, metadata={"help": "Enable Automatic Mixed Precision (AMP)"})
 
     def __post_init__(self):
-        # FP16 lacks dynamic range for Euclidean distances.
-        if "16" in self.precision and "bf16" not in self.precision:
-            raise ValueError("Unsafe precision '16-mixed' blocked. Use 'bf16-mixed' or '32-true'.")
-        
         if not (0.0 <= self.save_ratio <= 1.0):
             raise ValueError(f"save_ratio must be >= 0.0 and <= 1.0, got {self.save_ratio}")
             

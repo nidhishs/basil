@@ -4,8 +4,10 @@ import copy
 import json
 import logging
 import sys
+from collections import defaultdict
 from dataclasses import asdict
 from pathlib import Path
+from typing import Dict
 
 from basil.config import BasilDataConfig, BasilModelConfig, BasilTrainConfig
 
@@ -40,6 +42,29 @@ def setup_logging(name: str = "basil", level: str = "INFO") -> logging.Logger:
         logger.addHandler(handler)
 
     return logger
+
+
+class MetricsTracker:
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.val = defaultdict(float)
+        self.count = defaultdict(int)
+        self.total_samples = 0
+
+    def update(self, metrics: Dict[str, float], n: int = 1):
+        """
+        metrics: Dictionary of metric names and their values.
+        n: Batch size (weight).
+        """
+        self.total_samples += n
+        for k, v in metrics.items():
+            self.val[k] += v * n
+            self.count[k] += n
+
+    def average(self) -> Dict[str, float]:
+        return {k: self.val[k] / self.count[k] for k in self.val}
 
 
 def setup_device(request: str) -> "torch.device":
