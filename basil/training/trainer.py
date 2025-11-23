@@ -134,8 +134,12 @@ class BasilTrainer:
 
             self._validate_epoch(epoch)
 
-            if self.global_step > 0:
-                out_dir = self.out_root / f"e-{epoch}"
+            # Save checkpoint every save_interval epochs (if save_interval > 0)
+            if (
+                self.train_cfg.save_interval > 0
+                and (epoch + 1) % self.train_cfg.save_interval == 0
+            ):
+                out_dir = self.out_root / f"epoch-{epoch}"
                 save_checkpoint(*_ckpt_args, out_dir=out_dir, export_onnx=False)
 
         save_checkpoint(*_ckpt_args, out_dir=self.out_root, export_onnx=True)

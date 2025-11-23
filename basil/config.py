@@ -71,6 +71,7 @@ class BasilTrainConfig(BaseModel):
     weight_decay: float = Field(default=1e-4, description="AdamW weight decay")
     gradient_clip_norm: float = Field(default=1.0, description="Max gradient norm")
     gradient_accumulation_steps: int = Field(default=1, ge=1, description="Number of steps to accumulate gradients before updating.")
+    save_interval: int = Field(default=5, ge=0, description="Save checkpoint every N epochs. Set to 0 to disable intermediate checkpoints.")
     
     # System
     seed: int = Field(default=42, description="Random seed")

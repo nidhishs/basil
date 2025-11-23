@@ -1,0 +1,18 @@
+# Minimal training configuration
+# Copy this file and modify for your training runs
+
+output_dir: ./output/my_run
+
+model:
+  input_dim: 768              # Match your embedding dimension
+  codebook_size: 512          # Vocabulary size per level
+  num_levels: 3               # Residual quantization depth
+
+data:
+  path: embeddings.npy        # Path to your .npy file
+  batch_size: 4096            # Batch size
+
+train:
+  epochs: 30                  # Number of training epochs
+  lr: 0.001                   # Learning rate
+

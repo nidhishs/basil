@@ -1,0 +1,193 @@
+# Complete training configuration with all available parameters
+# This file documents every option. See config.minimal.yaml for a starting template.
+
+# Required: Directory where model checkpoints will be saved
+# Each epoch creates a subfolder: epoch-0/, epoch-1/, etc.
+output_dir: ./output/my_run
+
+# ============================================================================
+# MODEL CONFIGURATION
+# ============================================================================
+model:
+  # Required: Dimension of input embeddings (e.g. 768 for BERT, 1024 for SBERT)
+  # Must match the dimension of vectors in your .npy file
+  input_dim: 768
+
+  # Size of internal MLP projection layers
+  # Larger = more model capacity but slower training
+  # Default: 512
+  hidden_dim: 512
+
+  # Dimension of the quantized codebook vectors
+  # This is the latent space dimension before quantization
+  # Default: 32
+  latent_dim: 64
+
+  # Number of entries in each codebook level
+  # Larger = more expressive vocabulary but more memory
+  # Each semantic ID token will be in range [0, codebook_size-1]
+  # Default: 1024
+  codebook_size: 512
+
+  # Depth of residual quantization
+  # More levels = better reconstruction quality but longer semantic IDs
+  # Each level adds one token to the semantic ID
+  # Default: 3
+  num_levels: 3
+
+  # Dropout probability for regularization
+  # Higher = more regularization but may hurt reconstruction
+  # Default: 0.1
+  dropout: 0.1
+
+  # Weight of the commitment loss
+  # Encourages encoder outputs to stay close to codebook entries
+  # Lower = encoder moves more freely, higher = encoder commits to codes
+  # Default: 0.25
+  commitment_beta: 0.05
+
+  # Use hierarchical codebook sizes where each level is half the previous
+  # If true: level 0 uses codebook_size, level 1 uses codebook_size/2, etc.
+  # If false: all levels use codebook_size
+  # Default: false
+  use_hierarchical: true
+
+  # EMA (Exponential Moving Average) decay factor for codebook updates
+  # Higher = slower codebook adaptation, lower = faster but less stable
+  # Range: [0.0, 1.0]
+  # Default: 0.99
+  ema_decay: 0.99
+
+  # Use stochastic sampling during training for better codebook utilization
+  # If true: sample from top-k nearest codes probabilistically
+  # If false: always use nearest code (deterministic)
+  # Default: true
+  stochastic_sampling: true
+
+  # Temperature for stochastic sampling
+  # Higher = more random exploration, lower = more greedy selection
+  # Only used if stochastic_sampling is true
+  # Default: 0.6
+  stochastic_temperature: 0.6
+
+
+# ============================================================================
+# DATA CONFIGURATION
+# ============================================================================
+data:
+  # Required: Path to the .npy dataset file
+  # Must be a 2D numpy array of shape [N, D] where:
+  #   N = number of embeddings
+  #   D = embedding dimension (must equal model.input_dim)
+  path: embeddings.npy
+
+  # Fraction of dataset to use for validation
+  # Range: [0.0, 1.0]
+  # Default: 0.05 (5%)
+  val_set_size: 0.05
+
+  # Batch size for training
+  # Keep > 2048 for healthy codebook utilization
+  # Larger batches = better codebook coverage but more memory
+  # Default: 4096
+  batch_size: 4096
+
+  # Number of DataLoader workers for data loading
+  # 0 = load in main process, >0 = use multiprocessing
+  # Default: 8
+  num_workers: 8
+
+  # Enable streaming mode for datasets larger than RAM
+  # If true: use memory-mapped file + sequential reading
+  # If false: load entire dataset into RAM (faster but requires memory)
+  # Default: false
+  stream: false
+
+  # Required if stream=true: Confirms data is pre-shuffled on disk
+  # Streaming reads sequentially, so data MUST be randomized beforehand
+  # If stream=true and this is false, training will fail with an error
+  # Default: false
+  is_pre_shuffled: false
+
+  # Number of batches to prefetch per worker
+  # Higher = smoother data loading but more memory
+  # Default: 2
+  prefetch_factor: 2
+
+
+# ============================================================================
+# TRAINING CONFIGURATION
+# ============================================================================
+train:
+  # WandB project name for logging
+  # If null, WandB logging is disabled
+  # Default: null (disabled)
+  project_name: null
+
+  # Name of this specific run for WandB
+  # Only used if project_name is set
+  # Default: null (WandB generates a name)
+  run_name: null
+
+  # Log training metrics every N steps
+  # Lower = more frequent logging but slower training
+  # Default: 50
+  log_interval: 50
+
+  # Total number of training epochs
+  # One epoch = one full pass through the dataset
+  # Default: 20
+  epochs: 30
+
+  # Peak learning rate for AdamW optimizer
+  # Will be reached after warmup, then decayed
+  # Default: 1e-3 (0.001)
+  lr: 0.001
+
+  # Minimum learning rate for cosine decay schedule
+  # Learning rate will decay from lr to min_lr over training
+  # Default: 1e-5 (0.00001)
+  min_lr: 0.00001
+
+  # Ratio of total training steps to use for learning rate warmup
+  # E.g., 0.1 = first 10% of steps linearly increase from 0 to lr
+  # Default: 0.1
+  warmup_ratio: 0.1
+
+  # AdamW weight decay for regularization
+  # Higher = stronger regularization against overfitting
+  # Default: 1e-4 (0.0001)
+  weight_decay: 0.0001
+
+  # Maximum gradient norm for gradient clipping
+  # Prevents exploding gradients by scaling down if norm exceeds this
+  # Default: 1.0
+  gradient_clip_norm: 1.0
+
+  # Number of steps to accumulate gradients before optimizer update
+  # Effective batch size = batch_size * gradient_accumulation_steps
+  # Use to simulate larger batches without more memory
+  # Must be >= 1
+  # Default: 1 (no accumulation)
+  gradient_accumulation_steps: 1
+
+  # Save checkpoint every N epochs
+  # Set to 0 to only save final checkpoint
+  # Default: 5
+  save_interval: 5
+
+  # Random seed for reproducibility
+  # Use same seed for reproducible runs
+  # Default: 42
+  seed: 42
+
+  # Device for training
+  # Options: 'auto' (detect best), 'cuda', 'mps' (Apple Silicon), 'cpu'
+  # Default: 'auto'
+  device: auto
+
+  # Enable Automatic Mixed Precision (AMP) training
+  # Uses bfloat16 for faster training and less memory if available
+  # Default: true
+  use_amp: true
+
