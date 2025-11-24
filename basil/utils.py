@@ -6,6 +6,9 @@ import logging
 import sys
 from collections import defaultdict
 from pathlib import Path
+from typing import Callable
+
+import numpy as np
 
 from basil.config import BasilDataConfig, BasilModelConfig, BasilTrainConfig
 
@@ -40,6 +43,39 @@ def setup_logging(name: str = "basil", level: str = "INFO") -> logging.Logger:
         logger.addHandler(handler)
 
     return logger
+
+
+def process_batched_mmap(
+    input_path: str,
+    output_path: str,
+    process_fn: Callable[[np.ndarray], np.ndarray],
+    batch_size: int,
+    log_fn: Callable[[str], None] = lambda _: None,
+) -> None:
+    """Process arrays in batches with memory-mapped I/O."""
+    input_array = np.load(input_path, mmap_mode="r")
+    total = len(input_array)
+
+    # Infer output shape from first batch
+    first_size = min(batch_size, total)
+    first_result = process_fn(input_array[:first_size])
+
+    output_array = np.lib.format.open_memmap(
+        output_path,
+        mode="w+",
+        dtype=first_result.dtype,
+        shape=(total, first_result.shape[1]),
+    )
+    output_array[:first_size] = first_result
+
+    # Process remaining batches
+    for start in range(first_size, total, batch_size):
+        end = min(start + batch_size, total)
+        output_array[start:end] = process_fn(input_array[start:end])
+        if start % (batch_size * 10) == 0 or end == total:
+            log_fn(f"{end:,}/{total:,} ({100*end/total:.1f}%)")
+
+    output_array.flush()
 
 
 class MetricsTracker:

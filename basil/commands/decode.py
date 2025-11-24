@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 
 from basil.codec import BasilCodec
-from basil.utils import setup_logging
+from basil.utils import process_batched_mmap, setup_logging
 
 logger = setup_logging(__name__)
 
@@ -22,6 +22,7 @@ def add_parser(subparsers):
     parser.add_argument("-o", "--output", type=str, help="Path to output .npy file for vectors (default: <input>_decoded.npy)")
     parser.add_argument("-c", "--checkpoint", type=str, required=True, help="Path to trained model checkpoint directory")
     parser.add_argument("-b", "--backend", type=str, default="onnx", choices=["onnx", "torch"], help="Backend to use (default: onnx)")
+    parser.add_argument("-bs", "--batch-size", type=int, default=1024, help="Batch size for processing (default: 1024)")
     parser.set_defaults(func=decode_command)
     # fmt: on
 
@@ -32,30 +33,33 @@ def decode_command(args):
     Args:
         args: Parsed command-line arguments
     """
-    # Determine output path
-    if args.output is None:
-        input_path = Path(args.input)
-        args.output = str(input_path.parent / f"{input_path.stem}_decoded.npy")
+    input_path = Path(args.input)
+    if not input_path.exists():
+        raise FileNotFoundError(f"Input file not found: {args.input}")
 
-    logger.info(f"Loading semantic IDs from {args.input}")
-    semantic_ids = np.load(args.input)
-
+    # Validate input
+    semantic_ids = np.load(args.input, mmap_mode="r")
     if semantic_ids.ndim != 2:
         raise ValueError(
             f"Expected 2D array of semantic IDs, got shape {semantic_ids.shape}"
         )
 
-    logger.info(
-        f"Initializing codec from {args.checkpoint} with {args.backend} backend"
+    # Determine output path
+    output_path = args.output or str(
+        input_path.parent / f"{input_path.stem}_decoded.npy"
     )
+
+    logger.info(f"Decoding {len(semantic_ids):,} semantic IDs from {args.input}")
+    logger.info(f"Using {args.backend} backend from {args.checkpoint}")
+
     codec = BasilCodec(args.checkpoint, backend=args.backend)
 
-    logger.info(f"Decoding {len(semantic_ids)} semantic IDs...")
-    vectors = codec.batch_decode(semantic_ids)
-
-    logger.info(f"Saving vectors to {args.output}")
-    np.save(args.output, vectors)
-
-    logger.info(
-        f"Decoded {len(semantic_ids)} semantic IDs to vectors with shape {vectors.shape}."
+    process_batched_mmap(
+        input_path=args.input,
+        output_path=output_path,
+        process_fn=codec.batch_decode,
+        batch_size=args.batch_size,
+        log_fn=logger.info,
     )
+
+    logger.info(f"Decoded vectors saved to {output_path}")
