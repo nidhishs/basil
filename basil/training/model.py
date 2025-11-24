@@ -15,7 +15,7 @@ class VectorQuantizer(nn.Module):
         dim: int,
         codebook_size: int,
         ema_decay: float = 0.99,
-        reset_code_interval: int = 200,
+        reset_code_interval: int = 1000,
         stochastic: bool = False,
         temperature: float = 1.0,
     ):
@@ -27,6 +27,7 @@ class VectorQuantizer(nn.Module):
         self.temperature = temperature
         self.epsilon = 1e-5
         self.usage_threshold = self.ema_decay**reset_code_interval
+        self.scale = nn.Parameter(torch.ones(1))
 
         embedding = F.normalize(torch.randn(codebook_size, dim))
         self.register_buffer("embedding", embedding)
@@ -78,7 +79,7 @@ class VectorQuantizer(nn.Module):
         else:
             indices = torch.argmin(distances, dim=1)
 
-        quantized = F.embedding(indices, self.embedding)
+        quantized = F.embedding(indices, self.embedding) * self.scale
 
         # EMA Update (only during training)
         if self.training:
@@ -247,20 +248,56 @@ class ResidualVectorQuantizer(nn.Module):
         return z_q, indices, metrics
 
 
+class MLP(nn.Module):
+    """
+    Multi-layer perceptron with configurable dimensions and optional normalization.
+    """
+
+    def __init__(
+        self,
+        dims: list[int],
+        dropout: float = 0.1,
+        initial_norm: bool = False,
+        final_norm: bool = False,
+    ):
+        """
+        Args:
+            dims: List of layer dimensions [in_dim, hidden1, hidden2, ..., out_dim]
+            dropout: Dropout probability for regularization
+            initial_norm: Add LayerNorm before first layer
+            final_norm: Add LayerNorm after last layer
+        """
+        super().__init__()
+        layers = []
+
+        if initial_norm:
+            layers.append(nn.LayerNorm(dims[0]))
+
+        # Build layers: all except last have activation and dropout
+        for i, (in_dim, out_dim) in enumerate(zip(dims[:-1], dims[1:])):
+            layers.append(nn.Linear(in_dim, out_dim))
+            if not (i == len(dims) - 2):
+                layers.extend([nn.SiLU(), nn.Dropout(dropout)])
+
+        if final_norm:
+            layers.append(nn.LayerNorm(dims[-1]))
+
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, x):
+        return self.net(x)
+
+
 class RQVAE(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
 
-        self.encoder = nn.Sequential(
-            nn.Linear(config.input_dim, config.hidden_dim),
-            nn.SiLU(),
-            nn.Dropout(config.dropout),
-            nn.Linear(config.hidden_dim, config.hidden_dim),
-            nn.SiLU(),
-            nn.Dropout(config.dropout),
-            nn.Linear(config.hidden_dim, config.latent_dim),
-            nn.LayerNorm(config.latent_dim),
+        # Build encoder: input_dim -> encoder_dims -> latent_dim (with final norm)
+        self.encoder = MLP(
+            dims=[config.input_dim] + config.encoder_dims,
+            dropout=config.dropout,
+            final_norm=True,
         )
 
         self.quantizer = ResidualVectorQuantizer(
@@ -268,15 +305,11 @@ class RQVAE(nn.Module):
             embedding_dim=config.latent_dim,
         )
 
-        self.decoder = nn.Sequential(
-            nn.LayerNorm(config.latent_dim),
-            nn.Linear(config.latent_dim, config.hidden_dim),
-            nn.SiLU(),
-            nn.Dropout(config.dropout),
-            nn.Linear(config.hidden_dim, config.hidden_dim),
-            nn.SiLU(),
-            nn.Dropout(config.dropout),
-            nn.Linear(config.hidden_dim, config.input_dim),
+        # Build decoder: inverse of encoder (with initial norm)
+        self.decoder = MLP(
+            dims=config.encoder_dims[::-1] + [config.input_dim],
+            dropout=config.dropout,
+            initial_norm=True,
         )
 
     def forward(self, x):

@@ -11,17 +11,28 @@ class BasilModelConfig(BaseModel):
     model_config = ConfigDict(extra='forbid')
     
     input_dim: int = Field(..., description="Dimension of input embeddings (e.g. 768 for BERT)")
-    hidden_dim: int = Field(default=512, description="Size of internal MLP projection layers")
-    latent_dim: int = Field(default=32, description="Dimension of the quantized codebook vectors")
+    encoder_dims: list[int] = Field(..., description="List of dimensions for encoder layers [dim1, dim2, ..., latent_dim]. Decoder will be inverse.")
     codebook_size: int = Field(default=1024, description="Number of entries in each codebook level")
     num_levels: int = Field(default=3, description="Depth of residual quantization")
     dropout: float = Field(default=0.1, description="Dropout probability for regularization")
-    commitment_beta: float = Field(default=0.25, description="Weight of the commitment loss")
+    commitment_beta: float = Field(default=0.1, description="Weight of the commitment loss")
     use_hierarchical: bool = Field(default=False, description="Use hierarchical codebook sizes where each level is half the size of the previous level")
     ema_decay: float = Field(default=0.99, description="EMA decay factor for codebook updates")
-    reset_code_interval: int = Field(default=200, description="Number of steps a code can be unused before being reset.")
+    reset_code_interval: int = Field(default=1000, description="Number of steps a code can be unused before being reset.")
     stochastic_sampling: bool = Field(default=True, description="Use random sampling during training")
     stochastic_temperature: float = Field(default=0.6, description="Temperature for stochastic sampling (higher = more random)")
+    
+    @property
+    def latent_dim(self) -> int:
+        """The latent dimension is the last dimension in encoder_dims."""
+        return self.encoder_dims[-1]
+    
+    @field_validator('encoder_dims')
+    def validate_encoder_dims(cls, v):
+        """Ensure encoder_dims has at least 1 dimension."""
+        if len(v) < 1:
+            raise ValueError("encoder_dims must contain at least 1 dimension")
+        return v
 
 
 class BasilDataConfig(BaseModel):
@@ -67,7 +78,6 @@ class BasilTrainConfig(BaseModel):
     # Optimization
     epochs: int = Field(default=20, description="Total training epochs")
     lr: float = Field(default=1e-3, description="Peak learning rate")
-    min_lr: float = Field(default=1e-5, description="Minimum learning rate")
     warmup_ratio: float = Field(default=0.1, description="Ratio of total steps for LR warmup")
     weight_decay: float = Field(default=1e-4, description="AdamW weight decay")
     gradient_clip_norm: float = Field(default=1.0, description="Max gradient norm")

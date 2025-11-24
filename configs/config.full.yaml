@@ -13,15 +13,13 @@ model:
   # Must match the dimension of vectors in your .npy file
   input_dim: 768
 
-  # Size of internal MLP projection layers
-  # Larger = more model capacity but slower training
-  # Default: 512
-  hidden_dim: 512
-
-  # Dimension of the quantized codebook vectors
-  # This is the latent space dimension before quantization
-  # Default: 32
-  latent_dim: 64
+  # List of dimensions for encoder layers
+  # The encoder will transform: input_dim -> encoder_dims[0] -> encoder_dims[1] -> ... -> encoder_dims[-1]
+  # The decoder will be the inverse: encoder_dims[-1] -> ... -> encoder_dims[0] -> input_dim
+  # The last dimension (encoder_dims[-1]) is the latent dimension used for quantization
+  # Example: [512, 256, 64] creates encoder: 768->512->256->64, decoder: 64->256->512->768
+  # Default: None (required)
+  encoder_dims: [512, 256, 64]
 
   # Number of entries in each codebook level
   # Larger = more expressive vocabulary but more memory
@@ -140,14 +138,9 @@ train:
   epochs: 30
 
   # Peak learning rate for AdamW optimizer
-  # Will be reached after warmup, then decayed
+  # Will be reached after warmup, then decayed by OneCycleLR scheduler
   # Default: 1e-3 (0.001)
   lr: 0.001
-
-  # Minimum learning rate for cosine decay schedule
-  # Learning rate will decay from lr to min_lr over training
-  # Default: 1e-5 (0.00001)
-  min_lr: 0.00001
 
   # Ratio of total training steps to use for learning rate warmup
   # E.g., 0.1 = first 10% of steps linearly increase from 0 to lr

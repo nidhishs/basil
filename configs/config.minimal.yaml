@@ -5,6 +5,7 @@ output_dir: ./output/my_run
 
 model:
   input_dim: 768              # Match your embedding dimension
+  encoder_dims: [512, 256, 64]  # Encoder layer dimensions (decoder is inverse)
   codebook_size: 512          # Vocabulary size per level
   num_levels: 3               # Residual quantization depth
 
