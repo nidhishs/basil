@@ -16,6 +16,7 @@ MODEL_FILENAME = "model.safetensors"
 CONFIG_FILENAME = "config.json"
 
 TORCH_IMPORT_ERROR = "This feature requires the optional 'torch' dependency. Please install it via 'pip install basil[train]'."
+RAY_IMPORT_ERROR = "This feature requires the optional 'ray' and 'optuna' dependencies. Please install them via 'pip install basil[tune]'."
 
 # --- Optional Imports (Safe for Inference) ---
 # Guards ensure this module is safe for inference environments without Torch.

@@ -9,14 +9,9 @@ import yaml
 
 from basil.config import BasilDataConfig, BasilModelConfig, BasilTrainConfig
 from basil.training.trainer import BasilTrainer
-from basil.utils import setup_logging
+from basil.utils import RAY_IMPORT_ERROR, TORCH_IMPORT_ERROR, setup_logging
 
 logger = setup_logging(__name__)
-
-RAY_IMPORT_ERROR = (
-    "Hyperparameter optimization requires Ray Tune and Optuna. "
-    "Install with: pip install basil[tune]"
-)
 
 # Optional imports - set to None if not available
 try:
@@ -27,6 +22,11 @@ except ImportError:
     ray = None
     tune = None
     OptunaSearch = None
+
+try:
+    import torch
+except ImportError:
+    torch = None
 
 
 def add_parser(subparsers):
@@ -119,8 +119,13 @@ def _build_tuner(param_space: dict, opt: dict, output_dir: str):
         else None
     )
 
+    # Allocate GPU resources per trial if CUDA is available
+    resources_per_trial = (
+        {"gpu": 1} if torch and torch.cuda.is_available() else {"cpu": 1}
+    )
+
     return tune.Tuner(
-        _train_for_tune,
+        tune.with_resources(_train_for_tune, resources=resources_per_trial),
         param_space=param_space,
         tune_config=tune.TuneConfig(
             num_samples=num_samples,
@@ -161,6 +166,8 @@ def optimize_command(args):
     """Execute the hyperparameter optimization command."""
     if ray is None:
         raise ImportError(RAY_IMPORT_ERROR)
+    if torch is None:
+        raise ImportError(TORCH_IMPORT_ERROR)
 
     with open(args.config, "r") as f:
         raw = yaml.safe_load(f)
@@ -182,7 +189,9 @@ def optimize_command(args):
     logger.info(f"Starting optimization: {opt.get('num_samples', 20)} trials")
 
     if not ray.is_initialized():
-        ray.init(ignore_reinit_error=True)
+        num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
+        ray.init(num_gpus=num_gpus, ignore_reinit_error=True)
+        logger.info(f"Ray initialized with {num_gpus} GPUs")
 
     tuner = _build_tuner(param_space, opt, output_dir)
     results = tuner.fit()
