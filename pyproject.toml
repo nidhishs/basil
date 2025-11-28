@@ -13,20 +13,27 @@ dependencies = [
     "pyyaml (>=6.0.0,<7.0.0)",
 ]
 
+[project.optional-dependencies]
+train = [
+    "torch (>=2.5.0,<2.9.0)",
+    "wandb (>=0.23.0,<0.24.0)",
+    "scikit-learn (>=1.7.0,<2.0.0)",
+    "onnx (>=1.19.0,<2.0.0)",
+    "safetensors (>=0.7.0,<0.8.0)",
+]
+tune = [
+    "basil[train]",
+    "ray[tune] (>=2.40.0,<3.0.0)",
+    "optuna (>=4.0.0,<5.0.0)",
+]
+
 [project.scripts]
 basil = "basil.__main__:main"
 
 [dependency-groups]
 dev = [
     "black (>=25.11.0,<26.0.0)",
-    "isort (>=7.0.0,<8.0.0)"
-]
-train = [
-    "torch (>=2.5.0,<2.9.0)",
-    "wandb (>=0.23.0,<0.24.0)",
-    "scikit-learn (>=1.7.0,<2.0.0)",
-    "onnx (>=1.19.0,<2.0.0)",
-    "safetensors (>=0.7.0,<0.8.0)"
+    "isort (>=7.0.0,<8.0.0)",
 ]
 
 [build-system]

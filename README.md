@@ -68,3 +68,71 @@ data:
 - Uses memory-mapped I/O to let the OS swap pages in/out as needed
 - Reads data sequentially from disk to minimize seeking
 - Requires pre-shuffled data (set `is_pre_shuffled: true` to confirm)
+
+## Hyperparameter Optimization
+
+Find optimal hyperparameters using Bayesian optimization (Optuna) with Ray Tune.
+
+### Install with tuning dependencies
+```bash
+pip install -e .[tune]
+```
+
+### Run optimization
+```bash
+basil optimize configs/optimize.minimal.yaml
+```
+
+Run `basil optimize --help` for all options.
+
+**Config:** 
+- [`configs/optimize.minimal.yaml`](configs/optimize.minimal.yaml) - Minimal template to get started
+- [`configs/optimize.full.yaml`](configs/optimize.full.yaml) - Complete documentation of all parameters
+
+**Search space types:**
+| Type | Description | Example |
+|------|-------------|---------|
+| `uniform` | Continuous [low, high] | `low: 0.0, high: 0.2` |
+| `loguniform` | Log-uniform (for learning rates) | `low: 1e-4, high: 1e-2` |
+| `randint` | Integer [low, high) | `low: 2, high: 5` |
+| `choice` | Pick from list | `values: [true, false]` |
+| `quniform` | Quantized uniform | `low: 32, high: 256, q: 32` |
+
+**Example search space:**
+```yaml
+search_space:
+  model:
+    codebook_size:
+      type: choice
+      values: [256, 512, 1024]
+  train:
+    lr:
+      type: loguniform
+      low: 1.0e-4
+      high: 5.0e-3
+```
+
+**Optimization settings:**
+```yaml
+optimization:
+  num_samples: 20          # Number of trials to run
+  metric: val_cos_sim      # Metric to optimize
+  mode: max                # "max" or "min"
+  max_concurrent: 1        # Concurrent trials (based on GPU count)
+  scheduler: asha          # "asha" for early stopping or "none"
+  grace_period: 3          # Min epochs before ASHA can stop a trial
+  reduction_factor: 3      # ASHA stops bottom 1/N trials at each rung
+```
+
+**Algorithm details:**
+- Uses **Optuna** (Tree-structured Parzen Estimator) for Bayesian search
+- Optional **ASHA** (Async Successive Halving) scheduler aggressively stops underperforming trials early
+
+**Output:**
+- `best_config.yaml` - Best hyperparameters found, ready for `basil train`
+- Trial results in `output_dir/basil_optimize/` (Ray Tune format)
+
+**Train with best config:**
+```bash
+basil train output/tune_results/best_config.yaml
+```

@@ -7,7 +7,7 @@ It registers subcommands and routes to their respective implementations.
 import argparse
 import sys
 
-from basil.commands import decode, encode, train
+from basil.commands import decode, encode, optimize, train
 
 
 def main():
@@ -21,6 +21,7 @@ def main():
     train.add_parser(subparsers)
     encode.add_parser(subparsers)
     decode.add_parser(subparsers)
+    optimize.add_parser(subparsers)
 
     # Parse arguments
     args = parser.parse_args()

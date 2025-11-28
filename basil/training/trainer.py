@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from contextlib import nullcontext
 from pathlib import Path
 
@@ -27,12 +28,14 @@ class BasilTrainer:
         train_cfg: BasilTrainConfig,
         data_cfg: BasilDataConfig,
         output_dir: str,
+        epoch_callback: Callable[[BasilTrainer, dict], None] | None = None,
     ):
         self.model_cfg = model_cfg
         self.train_cfg = train_cfg
         self.data_cfg = data_cfg
         self.out_root = Path(output_dir)
         self.out_root.mkdir(parents=True, exist_ok=True)
+        self.epoch_callback = epoch_callback
 
         # 1. Device Selection (Centralized logic)
         self.device = setup_device(train_cfg.device)
@@ -283,6 +286,11 @@ class BasilTrainer:
             return
 
         self._log_step(avg, "val")
+
+        if self.epoch_callback:
+            self.epoch_callback(
+                self, {"epoch": epoch, **{f"val_{k}": v for k, v in avg.items()}}
+            )
 
         self.model.train()
 
