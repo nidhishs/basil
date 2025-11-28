@@ -83,7 +83,7 @@ class TorchBackend:
         model_args = {k: v for k, v in meta["model"].items() if k in valid_keys}
         cfg = BasilModelConfig(**model_args)
 
-        self.model = RQVAE(cfg)
+        self.model = RQVAE(cfg, train_cfg=None)
         state_dict = load_file(artifact_path / MODEL_FILENAME)
         self.model.load_state_dict(state_dict)
         self.model.eval()

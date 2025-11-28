@@ -96,7 +96,7 @@ class BasilTrainer:
         )
 
         # --- Model & Optimization ---
-        self.model = RQVAE(self.model_cfg).to(self.device)
+        self.model = RQVAE(self.model_cfg, self.train_cfg).to(self.device)
 
         num_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
         logger.info(f"Number of trainable parameters: {num_params:,}")

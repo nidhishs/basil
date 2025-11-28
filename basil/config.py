@@ -15,12 +15,7 @@ class BasilModelConfig(BaseModel):
     codebook_size: int = Field(default=1024, description="Number of entries in each codebook level")
     num_levels: int = Field(default=3, description="Depth of residual quantization")
     dropout: float = Field(default=0.1, description="Dropout probability for regularization")
-    commitment_beta: float = Field(default=0.1, description="Weight of the commitment loss")
     use_hierarchical: bool = Field(default=False, description="Use hierarchical codebook sizes where each level is half the size of the previous level")
-    ema_decay: float = Field(default=0.99, description="EMA decay factor for codebook updates")
-    reset_code_interval: int = Field(default=1000, description="Number of steps a code can be unused before being reset.")
-    stochastic_sampling: bool = Field(default=True, description="Use random sampling during training")
-    stochastic_temperature: float = Field(default=0.6, description="Temperature for stochastic sampling (higher = more random)")
     
     @property
     def latent_dim(self) -> int:
@@ -84,8 +79,19 @@ class BasilTrainConfig(BaseModel):
     gradient_accumulation_steps: int = Field(default=1, ge=1, description="Number of steps to accumulate gradients before updating.")
     save_interval: int = Field(default=5, ge=0, description="Save checkpoint every N epochs. Set to 0 to disable intermediate checkpoints.")
     
+    # VQ Training Behavior
+    commitment_beta: float = Field(default=0.1, description="Weight of the commitment loss")
+    ema_decay: float = Field(default=0.99, description="EMA decay factor for codebook updates")
+    reset_code_interval: int = Field(default=1000, description="Number of steps a code can be unused before being reset.")
+    stochastic_sampling: bool = Field(default=True, description="Use random sampling during training")
+    stochastic_temperature: float = Field(default=0.6, description="Temperature for stochastic sampling (higher = more random)")
+    
     # System
     seed: int = Field(default=42, description="Random seed")
     device: str = Field(default="auto", description="Accelerator: 'auto', 'cuda', 'mps', 'cpu'")
     use_amp: bool = Field(default=True, description="Enable Automatic Mixed Precision (AMP)")
+    
+    # Progressive Masking
+    use_progressive_masking: bool = Field(default=False, description="Enable progressive masking to enforce hierarchical independence of quantization levels")
+    progressive_mask_prob: float = Field(default=0.3, description="Probability of randomly truncating to fewer quantization levels during training. Only used if use_progressive_masking=True.")
 # fmt: on

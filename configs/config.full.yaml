@@ -38,35 +38,11 @@ model:
   # Default: 0.1
   dropout: 0.1
 
-  # Weight of the commitment loss
-  # Encourages encoder outputs to stay close to codebook entries
-  # Lower = encoder moves more freely, higher = encoder commits to codes
-  # Default: 0.25
-  commitment_beta: 0.05
-
   # Use hierarchical codebook sizes where each level is half the previous
   # If true: level 0 uses codebook_size, level 1 uses codebook_size/2, etc.
   # If false: all levels use codebook_size
   # Default: false
   use_hierarchical: true
-
-  # EMA (Exponential Moving Average) decay factor for codebook updates
-  # Higher = slower codebook adaptation, lower = faster but less stable
-  # Range: [0.0, 1.0]
-  # Default: 0.99
-  ema_decay: 0.99
-
-  # Use stochastic sampling during training for better codebook utilization
-  # If true: sample from top-k nearest codes probabilistically
-  # If false: always use nearest code (deterministic)
-  # Default: true
-  stochastic_sampling: true
-
-  # Temperature for stochastic sampling
-  # Higher = more random exploration, lower = more greedy selection
-  # Only used if stochastic_sampling is true
-  # Default: 0.6
-  stochastic_temperature: 0.6
 
 
 # ============================================================================
@@ -169,6 +145,35 @@ train:
   # Default: 5
   save_interval: 5
 
+  # Weight of the commitment loss
+  # Encourages encoder outputs to stay close to codebook entries
+  # Lower = encoder moves more freely, higher = encoder commits to codes
+  # Default: 0.1
+  commitment_beta: 0.05
+
+  # EMA (Exponential Moving Average) decay factor for codebook updates
+  # Higher = slower codebook adaptation, lower = faster but less stable
+  # Range: [0.0, 1.0]
+  # Default: 0.99
+  ema_decay: 0.99
+
+  # Number of steps a code can be unused before being reset
+  # Lower = more aggressive dead code restart
+  # Default: 1000
+  reset_code_interval: 1000
+
+  # Use stochastic sampling during training for better codebook utilization
+  # If true: sample from top-k nearest codes probabilistically
+  # If false: always use nearest code (deterministic)
+  # Default: true
+  stochastic_sampling: true
+
+  # Temperature for stochastic sampling
+  # Higher = more random exploration, lower = more greedy selection
+  # Only used if stochastic_sampling is true
+  # Default: 0.6
+  stochastic_temperature: 0.6
+
   # Random seed for reproducibility
   # Use same seed for reproducible runs
   # Default: 42
@@ -184,3 +189,11 @@ train:
   # Default: true
   use_amp: true
 
+  # Progressive masking randomly truncates to fewer quantization levels during training.
+  # This forces each level to be independently useful, adding hierachy.
+  use_progressive_masking: false
+
+  # Probability of randomly truncating to fewer quantization levels during training.
+  # Higher value = more aggressive level independence training, but later levels train less often.
+  # Default: 0.3
+  progressive_mask_prob: 0.3

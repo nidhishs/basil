@@ -4,6 +4,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from basil.config import BasilTrainConfig
+
 
 class VectorQuantizer(nn.Module):
     """
@@ -14,19 +16,18 @@ class VectorQuantizer(nn.Module):
         self,
         dim: int,
         codebook_size: int,
-        ema_decay: float = 0.99,
-        reset_code_interval: int = 1000,
-        stochastic: bool = False,
-        temperature: float = 1.0,
+        train_cfg: BasilTrainConfig | None = None,
     ):
         super().__init__()
+        train_cfg = train_cfg or BasilTrainConfig()
+
         self.dim = dim
         self.codebook_size = codebook_size
-        self.ema_decay = ema_decay
-        self.stochastic_sampling = stochastic
-        self.temperature = temperature
+        self.ema_decay = train_cfg.ema_decay
+        self.stochastic_sampling = train_cfg.stochastic_sampling
+        self.temperature = train_cfg.stochastic_temperature
         self.epsilon = 1e-5
-        self.usage_threshold = self.ema_decay**reset_code_interval
+        self.usage_threshold = self.ema_decay**train_cfg.reset_code_interval
         self.scale = nn.Parameter(torch.ones(1))
 
         embedding = F.normalize(torch.randn(codebook_size, dim))
@@ -144,35 +145,37 @@ class ResidualVectorQuantizer(nn.Module):
     Supports hierarchical codebook sizes.
     """
 
-    def __init__(self, config, embedding_dim: int):
+    def __init__(self, model_cfg, train_cfg: BasilTrainConfig | None = None):
         super().__init__()
-        self.config = config
-        self.num_levels = config.num_levels
-        self.base_codebook_size = config.codebook_size
-        self.embedding_dim = embedding_dim
-        self.beta = config.commitment_beta
-        self.use_hierarchical = config.use_hierarchical
+        train_cfg = train_cfg or BasilTrainConfig()
+
+        self.config = model_cfg
+        self.num_levels = model_cfg.num_levels
+        self.base_codebook_size = model_cfg.codebook_size
+        self.embedding_dim = model_cfg.latent_dim
+        self.beta = train_cfg.commitment_beta
+        self.use_hierarchical = model_cfg.use_hierarchical
+        self.use_progressive_masking = train_cfg.use_progressive_masking
+        self.progressive_mask_prob = train_cfg.progressive_mask_prob
 
         # Determine codebook sizes for each level
-        if config.use_hierarchical:
+        if model_cfg.use_hierarchical:
             # Hierarchical: size, size//2, size//4, ...
             codebook_sizes = [
-                max(config.codebook_size // (2**i), 8) for i in range(config.num_levels)
+                max(model_cfg.codebook_size // (2**i), 8)
+                for i in range(model_cfg.num_levels)
             ]
         else:
             # Uniform: all levels have the same size
-            codebook_sizes = [config.codebook_size] * config.num_levels
+            codebook_sizes = [model_cfg.codebook_size] * model_cfg.num_levels
 
         # Create VectorQuantizer layers
         self.layers = nn.ModuleList(
             [
                 VectorQuantizer(
-                    dim=embedding_dim,
+                    dim=model_cfg.latent_dim,
                     codebook_size=size,
-                    ema_decay=config.ema_decay,
-                    reset_code_interval=config.reset_code_interval,
-                    stochastic=config.stochastic_sampling,
-                    temperature=config.stochastic_temperature,
+                    train_cfg=train_cfg,
                 )
                 for size in codebook_sizes
             ]
@@ -207,21 +210,29 @@ class ResidualVectorQuantizer(nn.Module):
             indices: Stacked codebook indices (batch_size, num_levels)
             metrics: Dictionary of loss components and metrics
         """
+        # Determine active levels for progressive masking
+        should_progressive_mask = torch.rand(1).item() < self.progressive_mask_prob
+        if self.training and should_progressive_mask:
+            active_levels = torch.randint(1, self.num_levels + 1, (1,)).item()
+        else:
+            active_levels = self.num_levels
+
         residual = z
         quantized_sum = torch.zeros_like(z)
         indices_list = []
 
         total_commit_loss = 0.0
 
-        for layer in self.layers:
-            # Quantize current residual
-            quantized, indices, commit_loss = layer(residual)
+        for i, layer in enumerate(self.layers):
+            if i >= active_levels:
+                indices_list.append(
+                    torch.zeros(z.size(0), dtype=torch.long, device=z.device)
+                )
+                continue
 
-            # Accumulate
+            quantized, indices, commit_loss = layer(residual)
             indices_list.append(indices)
             total_commit_loss += commit_loss
-
-            # Update residual for next level
             residual = residual - quantized
             quantized_sum = quantized_sum + quantized
 
@@ -289,26 +300,26 @@ class MLP(nn.Module):
 
 
 class RQVAE(nn.Module):
-    def __init__(self, config):
+    def __init__(self, model_cfg, train_cfg: BasilTrainConfig | None = None):
         super().__init__()
-        self.config = config
+        self.config = model_cfg
 
         # Build encoder: input_dim -> encoder_dims -> latent_dim (with final norm)
         self.encoder = MLP(
-            dims=[config.input_dim] + config.encoder_dims,
-            dropout=config.dropout,
+            dims=[model_cfg.input_dim] + model_cfg.encoder_dims,
+            dropout=model_cfg.dropout,
             final_norm=True,
         )
 
         self.quantizer = ResidualVectorQuantizer(
-            config=config,
-            embedding_dim=config.latent_dim,
+            model_cfg=model_cfg,
+            train_cfg=train_cfg,
         )
 
         # Build decoder: inverse of encoder (with initial norm)
         self.decoder = MLP(
-            dims=config.encoder_dims[::-1] + [config.input_dim],
-            dropout=config.dropout,
+            dims=model_cfg.encoder_dims[::-1] + [model_cfg.input_dim],
+            dropout=model_cfg.dropout,
             initial_norm=True,
         )
 

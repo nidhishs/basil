@@ -4,16 +4,18 @@
 output_dir: ./output/my_run
 
 model:
-  input_dim: 768              # Match your embedding dimension
+  input_dim: 768                # Match your embedding dimension
   encoder_dims: [512, 256, 64]  # Encoder layer dimensions (decoder is inverse)
-  codebook_size: 512          # Vocabulary size per level
-  num_levels: 3               # Residual quantization depth
+  codebook_size: 512            # Vocabulary size per level
+  num_levels: 3                 # Residual quantization depth
+  dropout: 0.05                 # Dropout probability
+  use_hierarchical: true        # Use hierarchical codebook sizes
 
 data:
   path: embeddings.npy        # Path to your .npy file
   batch_size: 4096            # Batch size
 
 train:
-  epochs: 30                  # Number of training epochs
-  lr: 0.001                   # Learning rate
-
+  epochs: 30                    # Number of training epochs
+  lr: 0.001                     # Learning rate
+  use_progressive_masking: true # Randomly truncate to fewer quantization levels during training
